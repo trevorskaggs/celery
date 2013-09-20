@@ -6,8 +6,6 @@ from copy import deepcopy
 from mock import Mock, patch
 from pickle import loads, dumps
 
-from kombu import Exchange
-
 from celery import shared_task, current_app
 from celery import app as _app
 from celery import _state
@@ -287,10 +285,13 @@ class test_App(AppCase):
         def aawsX():
             pass
 
-        with patch('celery.app.amqp.TaskProducer.publish_task') as dt:
-            aawsX.apply_async((4, 5))
-            args = dt.call_args[0][1]
-            self.assertEqual(args, ('hello', 4, 5))
+        with patch('celery.app.amqp.AMQP.create_task_message') as create:
+            with patch('celery.app.amqp.AMQP.send_task_message') as send:
+                create.return_value = Mock(), Mock(), Mock(), Mock()
+                aawsX.apply_async((4, 5))
+                args = create.call_args[0][2]
+                self.assertEqual(args, ('hello', 4, 5))
+                self.assertTrue(send.called)
 
     def test_apply_async__connection_arg(self):
         @self.app.task(shared=False)
@@ -531,22 +532,23 @@ class test_App(AppCase):
             chan.close()
         assert conn.transport_cls == 'memory'
 
-        prod = self.app.amqp.TaskProducer(
-            conn, exchange=Exchange('foo_exchange'),
-            send_sent_event=True,
+        message = self.app.amqp.create_task_message(
+            'id', 'footask', (), {}, create_sent_event=True,
         )
 
+        prod = self.app.amqp.Producer(conn)
         dispatcher = Dispatcher()
-        self.assertTrue(prod.publish_task('footask', (), {},
-                                          exchange='moo_exchange',
-                                          routing_key='moo_exchange',
-                                          event_dispatcher=dispatcher))
+        self.app.amqp.send_task_message(
+            prod, 'footask', message,
+            exchange='moo_exchange', routing_key='moo_exchange',
+            event_dispatcher=dispatcher,
+        )
         self.assertTrue(dispatcher.sent)
         self.assertEqual(dispatcher.sent[0][0], 'task-sent')
-        self.assertTrue(prod.publish_task('footask', (), {},
-                                          event_dispatcher=dispatcher,
-                                          exchange='bar_exchange',
-                                          routing_key='bar_exchange'))
+        self.app.amqp.send_task_message(
+            prod, 'footask', message, event_dispatcher=dispatcher,
+            exchange='bar_exchange', routing_key='bar_exchange'
+        )
 
     def test_error_mail_sender(self):
         x = ErrorMail.subject % {'name': 'task_name',

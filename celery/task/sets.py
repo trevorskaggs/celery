@@ -40,7 +40,7 @@ class TaskSet(list):
     def __init__(self, tasks=None, app=None, Publisher=None):
         super(TaskSet, self).__init__(maybe_subtask(t) for t in tasks or [])
         self.app = app_or_default(app or self.app)
-        self.Publisher = Publisher or self.app.amqp.TaskProducer
+        self.Publisher = Publisher or self.app.amqp.Producer
         self.total = len(self)  # XXX compat
 
     def apply_async(self, connection=None, publisher=None, taskset_id=None):
