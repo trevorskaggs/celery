@@ -32,7 +32,8 @@ QUEUE_FORMAT = """
 key={0.routing_key}
 """
 
-task_message = namedtuple('task_message', 'headers properties body sent_event')
+task_message = namedtuple('task_message',
+                          ('headers', 'properties', 'body', 'sent_event'))
 
 
 class Queues(dict):
