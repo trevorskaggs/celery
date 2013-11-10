@@ -554,7 +554,7 @@ class ResultSet(ResultBase):
         if not results:
             return iter([])
         return results[0].backend.get_many(
-            set(r.id for r in results), timeout=timeout, interval=interval,
+            {r.id for r in results}, timeout=timeout, interval=interval,
         )
 
     def join_native(self, timeout=None, propagate=True,
@@ -570,9 +570,9 @@ class ResultSet(ResultBase):
         result backends.
 
         """
-        order_index = None if callback else dict(
-            (result.id, i) for i, result in enumerate(self.results)
-        )
+        order_index = None if callback else {
+            result.id: i for i, result in enumerate(self.results)
+        }
         acc = None if callback else [None for _ in range(len(self))]
         for task_id, meta in self.iter_native(timeout, interval):
             value = meta['result']

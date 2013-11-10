@@ -219,7 +219,7 @@ class Request(object):
         fun = self.task.run
         supported_keys = fun_takes_kwargs(fun, default_kwargs)
         extend_with = {key: val for key, val in items(default_kwargs)
-                       if key in supported_keys)
+                       if key in supported_keys}
         kwargs.update(extend_with)
         return kwargs
 

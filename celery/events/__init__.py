@@ -110,7 +110,7 @@ class EventDispatcher(object):
     You need to :meth:`close` this after use.
 
     """
-    DISABLED_TRANSPORTS = set(['sql'])
+    DISABLED_TRANSPORTS = {'sql'}
 
     app = None
 

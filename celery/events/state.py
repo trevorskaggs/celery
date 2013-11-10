@@ -204,7 +204,8 @@ class Task(AttributeDict):
         """Merge with out of order event."""
         keep = self.merge_rules.get(state)
         if keep is not None:
-            fields = dict((key, fields.get(key)) for key in keep)
+            get = fields.get
+            fields = {key: get(key) for key in keep}
             super(Task, self).update(fields)
 
     def on_sent(self, timestamp=None, **fields):
@@ -301,9 +302,10 @@ class State(object):
 
     def _clear_tasks(self, ready=True):
         if ready:
-            in_progress = dict(
-                (uuid, task) for uuid, task in self.itertasks()
-                if task.state not in states.READY_STATES)
+            in_progress = {
+                uuid: task for uuid, task in self.itertasks()
+                if task.state not in states.READY_STATES
+            }
             self.tasks.clear()
             self.tasks.update(in_progress)
         else:
@@ -436,7 +438,7 @@ class State(object):
 
     def task_types(self):
         """Return a list of all seen task types."""
-        return list(sorted(set(task.name for task in values(self.tasks))))
+        return list(sorted({task.name for task in values(self.tasks)}))
 
     def alive_workers(self):
         """Return a list of (seemingly) alive workers."""
