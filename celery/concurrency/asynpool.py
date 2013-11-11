@@ -26,6 +26,14 @@ import socket
 import struct
 import time
 
+try:
+    from os import readv
+except ImportError:
+    try:
+        from _billiard import readv  # noqa
+    except ImportError:
+        readv = None  # noqa
+
 from collections import deque, namedtuple
 from io import BytesIO
 from pickle import HIGHEST_PROTOCOL
@@ -152,48 +160,53 @@ class ResultHandler(_pool.ResultHandler):
         self.state_handlers[WORKER_UP] = self.on_process_alive
 
     def _recv_message(self, add_reader, fd, callback,
-                      read=os.read, unpack=struct.unpack,
-                      loads=_pickle.loads, BytesIO=BytesIO):
-        buf = BytesIO()
+                      read=os.read, unpack_from=struct.unpack_from,
+                      load=_pickle.load, BytesIO=BytesIO):
+        Hr = Br = 0
         # header
-        remaining = 4
-        bsize = None
+        hbuf = bytearray(4)
+        hbufv = memoryview(hbuf)
         assert not isblocking(fd)
-        while remaining > 0:
+        #print('+READ HEADER')
+        while Hr < 4:
             try:
-                bsize = read(fd, remaining)
+                n = readv(fd, [hbufv[Hr:]])
             except OSError as exc:
                 if get_errno(exc) not in UNAVAIL:
                     raise
+                #print('YIELD')
                 yield
             else:
-                n = len(bsize)
                 if n == 0:
-                    if remaining == 4:
+                    if Hr == 0:
                         raise EOFError()
                     else:
                         raise OSError("Got end of file during message")
-                remaining -= n
-
-        remaining, = size, = unpack('>i', bsize)
-        while remaining > 0:
+                Hr += n
+        #print('-READ HEADER')
+        body_size, = unpack_from('>i', hbufv.tobytes())
+        buf = bytearray(body_size)
+        bufv = memoryview(buf)
+        #print('+ READ BODY')
+        while Br < body_size:
             try:
-                chunk = read(fd, remaining)
+                n = readv(fd, [bufv[Br:]])
             except OSError as exc:
                 if get_errno(exc) not in UNAVAIL:
                     raise
+                #print('YIELD')
                 yield
             else:
-                n = len(chunk)
                 if n == 0:
-                    if remaining == size:
+                    if Br == 0:
                         raise EOFError()
                     else:
                         raise IOError('Got end of file during message')
-                buf.write(chunk)
-                remaining -= n
+                Br += n
+        #print('- READ BODY')
         add_reader(fd, self.handle_event, fd)
-        message = loads(buf.getvalue())
+        message = load(BytesIO(bufv))
+        #print('RECEIVED %r: %r' % (len(bufv), message))
         if message:
             callback(message)
 
