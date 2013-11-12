@@ -177,6 +177,12 @@ class ResultHandler(_pool.ResultHandler):
                 #print('YIELD')
                 yield
             else:
+                if n < 0:  # readv return -1 on would block
+                    if n == 0:
+                        raise EOFError()
+                    #print('YIELDING')
+                    yield
+                    continue
                 if n == 0:
                     if Hr == 0:
                         raise EOFError()
