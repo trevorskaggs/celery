@@ -3,6 +3,7 @@
 ===========================================
  What's new in Celery 3.1 (Cipater)
 ===========================================
+:Author: Ask Solem (ask at celeryproject.org)
 
 .. sidebar:: Change history
 
@@ -74,12 +75,12 @@ so I cannot recommend them for production use.
 
 The next version of Celery 3.2 will focus on performance and removing
 rarely used parts of the library.  Work has also started on a new message
-protocol, supporting multiple languages and more.  The initial a draft that can
+protocol, supporting multiple languages and more.  The initial draft can
 be found :ref:`here <protov2draft>`.
 
-This has probably been the hardest version to complete, so no introduction
-to this changelog would be complete without a massive thank you to everyone
-who contributed and helped me test this release!
+This has probably been the hardest release I've worked on, so no
+introduction to this changelog would be complete without a massive
+thank you to everyone who contributed and helped me test it!
 
 Thank you for your support!
 
@@ -317,19 +318,20 @@ but if you would like to experiment with it you should know that:
 
     .. code-block:: python
 
-        from django.conf imoprt settings
+        from django.conf import settings
         app.autodiscover_tasks(settings.INSTALLED_APPS)
 
 - You no longer use ``manage.py``
 
-    Instead you use the :program:`celery` command directly, but for that to
-    work you need to specify the :envvar:`DJANGO_SETTINGS_MODULE` environment
-    variable:
+    Instead you use the :program:`celery` command directly:
 
     .. code-block:: bash
 
-        DJANGO_SETTINGS_MODULE='proj.settings' celery -A proj worker -l info
+        celery -A proj worker -l info
 
+    For this to work your app module must store the  :envvar:`DJANGO_SETTINGS_MODULE`
+    environment variable, see the example in the :ref:`Django
+    guide <django-first-steps>`.
 
 To get started with the new API you should first read the :ref:`first-steps`
 tutorial, and then you should read the Django specific instructions in
@@ -994,7 +996,7 @@ In Other News
 
         >>> t.apply_async(headers={'sender': 'George Costanza'})
 
-- New :signal:`before_task_publish`` signal dispatched before a task message
+- New :signal:`before_task_publish` signal dispatched before a task message
   is sent and can be used to modify the final message fields (Issue #1281).
 
 - New :signal:`after_task_publish` signal replaces the old :signal:`task_sent`

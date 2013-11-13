@@ -1,10 +1,10 @@
 from __future__ import absolute_import
 
+import gc
 import os
 import itertools
 
 from copy import deepcopy
-from mock import Mock, patch
 from pickle import loads, dumps
 
 from kombu import Exchange
@@ -23,8 +23,10 @@ from celery.utils.serialization import pickle
 from celery.tests.case import (
     CELERY_TEST_CONFIG,
     AppCase,
+    Mock,
     depends_on_current_app,
     mask_modules,
+    patch,
     platform_pyimp,
     sys_platform,
     pypy_version,
@@ -424,6 +426,8 @@ class test_App(AppCase):
         self.assertIn(app1, _state._get_active_apps())
         app1.close()
         del(app1)
+
+        gc.collect()
 
         # weakref removed from list when app goes out of scope.
         with self.assertRaises(StopIteration):

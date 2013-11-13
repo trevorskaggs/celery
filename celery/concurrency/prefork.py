@@ -9,13 +9,14 @@
 from __future__ import absolute_import
 
 import os
+import sys
 
 from billiard import forking_enable
 from billiard.pool import RUN, CLOSE, Pool as BlockingPool
 
 from celery import platforms
 from celery import signals
-from celery._state import set_default_app
+from celery._state import set_default_app, _set_task_join_will_block
 from celery.app import trace
 from celery.concurrency.base import BasePool
 from celery.five import items
@@ -52,6 +53,7 @@ def process_initializer(app, hostname):
     logging works.
 
     """
+    _set_task_join_will_block(True)
     platforms.signals.reset(*WORKER_SIGRESET)
     platforms.signals.ignore(*WORKER_SIGIGNORE)
     platforms.set_mp_process_title('celeryd', hostname=hostname)
@@ -105,7 +107,7 @@ class TaskPool(BasePool):
         Will pre-fork all workers so they're ready to accept tasks.
 
         """
-        if self.options.get('maxtasksperchild'):
+        if self.options.get('maxtasksperchild') and sys.platform != 'win32':
             try:
                 from billiard.connection import Connection
                 Connection.send_offset
@@ -159,6 +161,10 @@ class TaskPool(BasePool):
             self._pool.close()
 
     def _get_info(self):
+        try:
+            write_stats = self._pool.human_write_stats
+        except AttributeError:
+            write_stats = lambda: 'N/A'  # only supported by asynpool
         return {
             'max-concurrency': self.limit,
             'processes': [p.pid for p in self._pool._pool],
@@ -166,7 +172,7 @@ class TaskPool(BasePool):
             'put-guarded-by-semaphore': self.putlocks,
             'timeouts': (self._pool.soft_timeout or 0,
                          self._pool.timeout or 0),
-            'writes': self._pool.human_write_stats(),
+            'writes': write_stats()
         }
 
     @property

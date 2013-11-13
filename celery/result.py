@@ -18,6 +18,7 @@ from kombu.utils.compat import OrderedDict
 
 from . import current_app
 from . import states
+from ._state import task_join_will_block
 from .app import app_or_default
 from .datastructures import DependencyGraph, GraphFormatter
 from .exceptions import IncompleteStream, TimeoutError
@@ -25,6 +26,17 @@ from .five import items, range, string_t, monotonic
 
 __all__ = ['ResultBase', 'AsyncResult', 'ResultSet', 'GroupResult',
            'EagerResult', 'result_from_tuple']
+
+E_WOULDBLOCK = """\
+Never call result.get() within a task!
+See http://docs.celeryq.org/en/latest/userguide/tasks.html\
+#task-synchronous-subtasks
+"""
+
+
+def assert_will_not_block():
+    if task_join_will_block():
+        pass   # TODO future version: raise
 
 
 class ResultBase(object):
@@ -114,6 +126,7 @@ class AsyncResult(ResultBase):
         be re-raised.
 
         """
+        assert_will_not_block()
         if propagate and self.parent:
             for node in reversed(list(self._parents())):
                 node.get(propagate=True, timeout=timeout, interval=interval)
@@ -153,6 +166,8 @@ class AsyncResult(ResultBase):
         Calling :meth:`collect` would return:
 
         .. code-block:: python
+
+            >>> from proj.tasks import A
 
             >>> result = A.delay(10)
             >>> list(result.collect())
@@ -519,6 +534,7 @@ class ResultSet(ResultBase):
             seconds.
 
         """
+        assert_will_not_block()
         time_start = monotonic()
         remaining = None
 
@@ -570,6 +586,7 @@ class ResultSet(ResultBase):
         result backends.
 
         """
+        assert_will_not_block()
         order_index = None if callback else {
             result.id: i for i, result in enumerate(self.results)
         }
@@ -643,8 +660,9 @@ class GroupResult(ResultSet):
 
         Example::
 
-            >>> result.save()
-            >>> result = GroupResult.restore(group_id)
+            >>> def save_and_restore(result):
+            ...     result.save()
+            ...     result = GroupResult.restore(result.id)
 
         """
         return (backend or self.app.backend).save_group(self.id, self)
@@ -683,7 +701,7 @@ class GroupResult(ResultSet):
     def restore(self, id, backend=None):
         """Restore previously saved group result."""
         return (
-            backend or self.app.backend if self.app else current_app.backend
+            backend or (self.app.backend if self.app else current_app.backend)
         ).restore_group(id)
 
 

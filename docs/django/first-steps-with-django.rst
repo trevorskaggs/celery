@@ -35,25 +35,66 @@ that defines the Celery instance:
 
 .. code-block:: python
 
+    from __future__ import absolute_import
+
+    import os
+
     from celery import Celery
     from django.conf import settings
 
-    app = Celery('proj.celery')
+    os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'proj.settings')
+
+    app = Celery('proj')
     app.config_from_object('django.conf:settings')
     app.autodiscover_tasks(settings.INSTALLED_APPS, related_name='tasks')
 
-    @celery.task(bind=True)
+    @app.task(bind=True)
     def debug_task(self):
         print('Request: {0!r}'.format(self.request))
 
-Let's explain what happens here.
-First we create the Celery app instance:
+Then you need to import this app in your :file:`proj/proj/__init__py`
+module.  This ensures that the app is loaded when Django starts
+so that the ``@shared_task`` decorator (mentioned later) will use it:
+
+:file:`proj/proj/__init__.py`:
+
+.. code-block:: python
+
+    from __future__ import absolute_import
+
+    from .celery import app as celery_app
+
+Note that this example project layout is suitable for larger projects,
+for simple projects you may use a single contained module that defines
+both the app and tasks, like in the :ref:`tut-firsteps` tutorial.
+
+Let's break down what happens in the first module,
+first we import absolute imports from the future, so that our
+``celery.py`` module will not crash with the library:
+
+.. code-block:: python
+
+    from __future__ import absolute_import
+
+Then we set the default :envvar:`DJANGO_SETTINGS_MODULE` 
+for the :program:`celery` command-line program:
+
+.. code-block:: python
+
+    os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'proj.settings')
+
+You don't need this line, but it saves you from always passing in the
+settings module to the celery program.  It must always come before
+creating the app instances, which is what we do next:
 
 .. code-block:: python
 
     app = Celery('proj')
 
-Then we add the Django settings module as a configuration source
+This is our instance of the library, you can have many instances
+but there's probably no reason for that when using Django.
+
+We also add the Django settings module as a configuration source
 for Celery.  This means that you don't have to use multiple
 configuration files, and instead configure Celery directly
 from the Django settings.
@@ -92,77 +133,64 @@ Finally, the ``debug_task`` example is a task that dumps
 its own request information.  This is using the new ``bind=True`` task option
 introduced in Celery 3.1 to easily refer to the current task instance.
 
-
-The `celery` command
---------------------
-
-To use the :program:`celery` command with Django you need to
-set up the :envvar:`DJANGO_SETTINGS_MODULE` environment variable:
-
-.. code-block:: bash
-
-    $ DJANGO_SETTINGS_MODULE='proj.settings' celery -A proj worker -l info
-
-    $ DJANGO_SETTINGS_MODULE='proj.settings' celery -A proj status
-
-If you find this inconvienient you can create a small wrapper script
-alongside ``manage.py`` that automatically binds to your app, e.g. ``proj/celery.py``
-
-:file:`proj/celery.py`
-
-.. code-block:: python
-
-    #!/usr/bin/env python
-    import os
-
-    from proj.celery import celery
-
-
-    if __name__ == '__main__':
-        os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'proj.celery')
-        celery.start()
-
-Then you can use this command directly:
-
-.. code-block:: bash
-
-    $ ./celery.py status
-
-
 Using the Django ORM/Cache as a result backend.
 -----------------------------------------------
 
 The ``django-celery`` library defines result backends that
 uses the Django ORM and Django Cache frameworks.
 
-To use this with your project you need to follow these three steps:
+To use this with your project you need to follow these four steps:
 
-    1. Install the ``django-celery`` library:
+1. Install the ``django-celery`` library:
 
-        .. code-block:: bash
+    .. code-block:: bash
 
-            $ pip install django-celery
+        $ pip install django-celery
 
-    2. Add ``djcelery`` to ``INSTALLED_APPS``.
+2. Add ``djcelery`` to ``INSTALLED_APPS``.
 
-    3. Create the celery database tables.
+3. Create the celery database tables.
 
-        This step will create the tables used to store results
-        when using the database result backend and the tables used
-        by the database periodic task scheduler.  You can skip
-        this step if you don't use these.
+    This step will create the tables used to store results
+    when using the database result backend and the tables used
+    by the database periodic task scheduler.  You can skip
+    this step if you don't use these.
 
-        If you are using south_ for schema migrations, you'll want to:
+    If you are using south_ for schema migrations, you'll want to:
 
-        .. code-block:: bash
+    .. code-block:: bash
 
-            $ python manage.py migrate djcelery
+        $ python manage.py migrate djcelery
 
-        For those who are not using south, a normal ``syncdb`` will work:
+    For those who are not using south, a normal ``syncdb`` will work:
 
-        .. code-block:: bash
+    .. code-block:: bash
 
-            $ python manage.py syncdb
+        $ python manage.py syncdb
+
+4.  Configure celery to use the django-celery backend.
+
+    For the database backend you must use:
+
+    .. code-block:: python
+
+        app.conf.update(
+            CELERY_RESULT_BACKEND='djcelery.backends.database:DatabaseBackend',
+        )
+
+    For the cache backend you can use:
+
+    .. code-block:: python
+
+        app.conf.update(
+            CELERY_RESULT_BACKEND='djcelery.backends.cache:CacheBackend',
+        )
+
+    If you have connected Celery to your Django settings then you can
+    add this directly into your settings module (without the
+    ``app.conf.update`` part)
+
+
 
 .. _south: http://pypi.python.org/pypi/South/
 
@@ -185,7 +213,8 @@ development it is useful to be able to start a worker instance by using the
 
 .. code-block:: bash
 
-    $ DJANGO_SETTINGS_MODULE='proj.settings' celery -A proj worker -l info
+    $ celery -A proj worker -l info
+
 
 For a complete listing of the command-line options available,
 use the help command:

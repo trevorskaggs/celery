@@ -24,6 +24,7 @@ import random
 import select
 import socket
 import struct
+import sys
 import time
 
 from collections import deque, namedtuple
@@ -35,7 +36,7 @@ from weakref import WeakValueDictionary, ref
 from amqp.utils import promise
 from billiard.pool import RUN, TERMINATE, ACK, NACK, WorkersJoined
 from billiard import pool as _pool
-from billiard.compat import setblocking, isblocking
+from billiard.compat import buf_t, setblocking, isblocking
 from billiard.einfo import ExceptionInfo
 from billiard.queues import _SimpleQueue
 from kombu.async import READ, WRITE, ERR
@@ -47,6 +48,34 @@ from celery.five import Counter, items, values
 from celery.utils.log import get_logger
 from celery.utils.text import truncate
 from celery.worker import state as worker_state
+
+try:
+    from _billiard import read as __read__
+    from struct import unpack_from as _unpack_from
+    memoryview = memoryview
+    readcanbuf = True
+
+    if sys.version_info[0] == 2 and sys.version_info < (2, 7, 6):
+
+        def unpack_from(fmt, view, _unpack_from=_unpack_from):  # noqa
+            return _unpack_from(fmt, view.tobytes())  # <- memoryview
+    else:
+        # unpack_from supports memoryview in 2.7.6 and 3.3+
+        unpack_from = _unpack_from  # noqa
+
+except (ImportError, NameError):  # pragma: no cover
+
+    def __read__(fd, buf, size, read=os.read):  # noqa
+        chunk = read(fd, size)
+        n = len(chunk)
+        if n != 0:
+            buf.write(chunk)
+        return n
+    readcanbuf = False  # noqa
+
+    def unpack_from(fmt, iobuf, unpack=struct.unpack):  # noqa
+        return unpack(fmt, iobuf.getvalue())  # <-- BytesIO
+
 
 logger = get_logger(__name__)
 error, debug = logger.error, logger.debug
@@ -139,6 +168,7 @@ class Worker(_pool.Worker):
     def prepare_result(self, result):
         if not isinstance(result, ExceptionInfo):
             return truncate(repr(result), 46)
+        return result
 
 
 class ResultHandler(_pool.ResultHandler):
@@ -152,47 +182,60 @@ class ResultHandler(_pool.ResultHandler):
         self.state_handlers[WORKER_UP] = self.on_process_alive
 
     def _recv_message(self, add_reader, fd, callback,
-                      read=os.read, unpack=struct.unpack,
-                      loads=_pickle.loads, BytesIO=BytesIO):
-        buf = BytesIO()
+                      __read__=__read__, readcanbuf=readcanbuf,
+                      BytesIO=BytesIO, unpack_from=unpack_from,
+                      load=_pickle.load):
+        Hr = Br = 0
+        if readcanbuf:
+            buf = bytearray(4)
+            bufv = memoryview(buf)
+        else:
+            buf = bufv = BytesIO()
         # header
-        remaining = 4
-        bsize = None
         assert not isblocking(fd)
-        while remaining > 0:
+
+        while Hr < 4:
             try:
-                bsize = read(fd, remaining)
+                n = __read__(
+                    fd, bufv[Hr:] if readcanbuf else bufv, 4 - Hr,
+                )
             except OSError as exc:
                 if get_errno(exc) not in UNAVAIL:
                     raise
                 yield
             else:
-                n = len(bsize)
                 if n == 0:
-                    if remaining == 4:
-                        raise EOFError()
-                    else:
-                        raise OSError("Got end of file during message")
-                remaining -= n
+                    raise (OSError('End of file during message') if Hr
+                           else EOFError())
+                Hr += n
 
-        remaining, = size, = unpack('>i', bsize)
-        while remaining > 0:
+        body_size, = unpack_from('>i', bufv)
+        if readcanbuf:
+            buf = bytearray(body_size)
+            bufv = memoryview(buf)
+        else:
+            buf = bufv = BytesIO()
+
+        while Br < body_size:
             try:
-                chunk = read(fd, remaining)
+                n = __read__(
+                    fd, bufv[Br:] if readcanbuf else bufv, body_size - Br,
+                )
             except OSError as exc:
                 if get_errno(exc) not in UNAVAIL:
                     raise
                 yield
-            n = len(chunk)
-            if n == 0:
-                if remaining == size:
-                    raise EOFError()
-                else:
-                    raise IOError('Got end of file during message')
-            buf.write(chunk)
-            remaining -= n
+            else:
+                if n == 0:
+                    raise (OSError('End of file during message') if Br
+                           else EOFError())
+                Br += n
         add_reader(fd, self.handle_event, fd)
-        message = loads(buf.getvalue())
+        if readcanbuf:
+            message = load(BytesIO(bufv))
+        else:
+            bufv.seek(0)
+            message = load(bufv)
         if message:
             callback(message)
 
@@ -242,45 +285,49 @@ class ResultHandler(_pool.ResultHandler):
             if check_timeouts is not None:
                 # make sure tasks with a time limit will time out.
                 check_timeouts()
+            # cannot iterate and remove at the same time
+            pending_remove_fd = set()
             for fd in outqueues:
-                try:
-                    proc = fileno_to_outq[fd]
-                except KeyError:
-                    # process already found terminated
-                    # which means its outqueue has already been processed
-                    # by the worker lost handler.
-                    outqueues.discard(fd)
-                    continue
-
-                reader = proc.outq._reader
-                try:
-                    setblocking(reader, 1)
-                except (OSError, IOError):
-                    outqueues.discard(fd)
-                    continue
-                try:
-                    if reader.poll(0):
-                        task = reader.recv()
-                    else:
-                        task = None
-                        sleep(0.5)
-                except (IOError, EOFError):
-                    outqueues.discard(fd)
-                    continue
-                else:
-                    if task:
-                        on_state_change(task)
-                finally:
-                    try:
-                        setblocking(reader, 0)
-                    except (OSError, IOError):
-                        outqueues.discard(fd)
-
+                self._flush_outqueue(
+                    fd, pending_remove_fd.discard, fileno_to_outq,
+                    on_state_change,
+                )
                 try:
                     join_exited_workers(shutdown=True)
                 except WorkersJoined:
-                    debug('result handler: all workers terminated')
-                    return
+                    return debug('result handler: all workers terminated')
+            outqueues.difference_update(pending_remove_fd)
+
+    def _flush_outqueue(self, fd, remove, process_index, on_state_change):
+        try:
+            proc = process_index[fd]
+        except KeyError:
+            # process already found terminated
+            # which means its outqueue has already been processed
+            # by the worker lost handler.
+            return remove(fd)
+
+        reader = proc.outq._reader
+        try:
+            setblocking(reader, 1)
+        except (OSError, IOError):
+            return remove(fd)
+        try:
+            if reader.poll(0):
+                task = reader.recv()
+            else:
+                task = None
+                sleep(0.5)
+        except (IOError, EOFError):
+            return remove(fd)
+        else:
+            if task:
+                on_state_change(task)
+        finally:
+            try:
+                setblocking(reader, 0)
+            except (OSError, IOError):
+                return remove(fd)
 
 
 class AsynPool(_pool.Pool):
@@ -676,7 +723,7 @@ class AsynPool(_pool.Pool):
             header = pack('>I', body_size)
             # index 1,0 is the job ID.
             job = get_job(tup[1][0])
-            job._payload = header, body, body_size
+            job._payload = buf_t(header), buf_t(body), body_size
             put_message(job)
         self._quick_put = send_job
 
@@ -974,7 +1021,7 @@ class AsynPool(_pool.Pool):
     def _stop_task_handler(task_handler):
         """Called at shutdown to tell processes that we are shutting down."""
         for proc in task_handler.pool:
-            proc.inq._writer.setblocking(1)
+            setblocking(proc.inq._writer, 1)
             try:
                 proc.inq.put(None)
             except OSError as exc:

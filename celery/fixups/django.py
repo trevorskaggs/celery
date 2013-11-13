@@ -30,7 +30,7 @@ def _maybe_close_fd(fh):
 
 def fixup(app, env='DJANGO_SETTINGS_MODULE'):
     SETTINGS_MODULE = os.environ.get(env)
-    if SETTINGS_MODULE:
+    if SETTINGS_MODULE and 'django' not in app.loader_cls.lower():
         try:
             import django  # noqa
         except ImportError:
@@ -178,7 +178,11 @@ class DjangoFixup(object):
         try:
             funs = [conn.close for conn in self._db.connections]
         except AttributeError:
-            funs = [self._db.close_connection]  # pre multidb
+            if hasattr(self._db, 'close_old_connections'):  # django 1.6
+                funs = [self._db.close_old_connections]
+            else:
+                # pre multidb, pending deprication in django 1.6
+                funs = [self._db.close_connection]
 
         for close in funs:
             try:
