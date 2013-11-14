@@ -171,7 +171,7 @@ class Scheduler(object):
         self.max_interval = (max_interval
                              or app.conf.CELERYBEAT_MAX_LOOP_INTERVAL
                              or self.max_interval)
-        self.Publisher = Publisher or app.amqp.TaskProducer
+        self.Publisher = Publisher or app.amqp.Producer
         if not lazy:
             self.setup_schedule()
 
