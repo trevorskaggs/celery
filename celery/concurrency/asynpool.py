@@ -39,7 +39,7 @@ from billiard import pool as _pool
 from billiard.compat import buf_t, setblocking, isblocking
 from billiard.einfo import ExceptionInfo
 from billiard.queues import _SimpleQueue
-from kombu.async import READ, WRITE, ERR
+from kombu.async import READ, WRITE, ERR, coroutine
 from kombu.serialization import pickle as _pickle
 from kombu.utils import fxrange
 from kombu.utils.compat import get_errno
@@ -166,6 +166,7 @@ class Worker(_pool.Worker):
         self.outq.put((WORKER_UP, (pid, )))
 
     def prepare_result(self, result):
+        return result
         if not isinstance(result, ExceptionInfo):
             return truncate(repr(result), 46)
         return result
@@ -181,6 +182,7 @@ class ResultHandler(_pool.ResultHandler):
         # add our custom message handler
         self.state_handlers[WORKER_UP] = self.on_process_alive
 
+    @coroutine
     def _recv_message(self, add_reader, fd, callback,
                       __read__=__read__, readcanbuf=readcanbuf,
                       BytesIO=BytesIO, unpack_from=unpack_from,
@@ -195,18 +197,13 @@ class ResultHandler(_pool.ResultHandler):
         assert not isblocking(fd)
 
         while Hr < 4:
-            try:
-                n = __read__(
-                    fd, bufv[Hr:] if readcanbuf else bufv, 4 - Hr,
-                )
-            except OSError as exc:
-                if get_errno(exc) not in UNAVAIL:
-                    raise
-                yield
-            else:
+            n = yield __read__, (
+                fd, bufv[Hr:] if readcanbuf else bufv, 4 - Hr,
+            )
+            if n is not None:
                 if n == 0:
                     raise (OSError('End of file during message') if Hr
-                           else EOFError())
+                        else EOFError())
                 Hr += n
 
         body_size, = unpack_from('>i', bufv)
@@ -217,18 +214,13 @@ class ResultHandler(_pool.ResultHandler):
             buf = bufv = BytesIO()
 
         while Br < body_size:
-            try:
-                n = __read__(
-                    fd, bufv[Br:] if readcanbuf else bufv, body_size - Br,
-                )
-            except OSError as exc:
-                if get_errno(exc) not in UNAVAIL:
-                    raise
-                yield
-            else:
+            n = yield __read__, (
+                fd, bufv[Br:] if readcanbuf else bufv, body_size - Br,
+            )
+            if n is not None:
                 if n == 0:
                     raise (OSError('End of file during message') if Br
-                           else EOFError())
+                        else EOFError())
                 Br += n
         add_reader(fd, self.handle_event, fd)
         if readcanbuf:
@@ -237,6 +229,7 @@ class ResultHandler(_pool.ResultHandler):
             bufv.seek(0)
             message = load(bufv)
         if message:
+            print('RECEIVED MESSAGE: %r' % (message, ))
             callback(message)
 
     def _make_process_result(self, hub):
@@ -253,15 +246,8 @@ class ResultHandler(_pool.ResultHandler):
                 fileno_to_outq[fileno]
             except KeyError:  # process gone
                 return hub_remove(fileno)
-            it = recv_message(add_reader, fileno, on_state_change)
-            try:
-                next(it)
-            except StopIteration:
-                pass
-            except (IOError, OSError, EOFError):
-                hub_remove(fileno)
-            else:
-                add_reader(fileno, it)
+            hub.replace(fileno, recv_message(add_reader, fileno,
+                on_state_change), READ)
         return on_result_readable
 
     def register_with_event_loop(self, hub):
@@ -703,15 +689,16 @@ class AsynPool(_pool.Pool):
                         mark_worker_as_busy(ready_fd)
 
                         # Try to write immediately, in case there's an error.
-                        try:
-                            next(cor)
-                        except StopIteration:
-                            pass
-                        except OSError as exc:
-                            if get_errno(exc) != errno.EBADF:
-                                raise
-                        else:
-                            add_writer(ready_fd, cor)
+                        hub.replace(ready_fd, cor, WRITE)
+                        #try:
+                        #    next(cor)
+                        #except StopIteration:
+                        #    pass
+                        #except OSError as exc:
+                        #    if get_errno(exc) != errno.EBADF:
+                        #        raise
+                        #else:
+                        #    add_writer(ready_fd, cor)
         hub.consolidate_callback = schedule_writes
 
         def send_job(tup):
@@ -733,6 +720,7 @@ class AsynPool(_pool.Pool):
             hub.remove(fd)
             self._put_back(job)
 
+        @coroutine
         def _write_job(proc, fd, job):
             # writes job to the worker process.
             # Operation must complete if more than one byte of data
@@ -748,35 +736,19 @@ class AsynPool(_pool.Pool):
                 Hw = Bw = 0
                 # write header
                 while Hw < 4:
-                    try:
-                        Hw += send(header, Hw)
-                    except Exception as exc:
-                        if get_errno(exc) not in UNAVAIL:
-                            raise
-                        # suspend until more data
-                        errors += 1
-                        if errors > 100:
-                            on_not_recovering(proc, fd, job)
-                            raise StopIteration()
-                        yield
-                    else:
-                        errors = 0
+                    n = yield send, (header, Hw)
+                    if n is not None:
+                        if n == 0:
+                            raise EOFError('pipe disconnected')
+                        Hw += n
 
                 # write body
                 while Bw < body_size:
-                    try:
-                        Bw += send(body, Bw)
-                    except Exception as exc:
-                        if get_errno(exc) not in UNAVAIL:
-                            raise
-                        # suspend until more data
-                        errors += 1
-                        if errors > 100:
-                            on_not_recovering(proc, fd, job)
-                            raise StopIteration()
-                        yield
-                    else:
-                        errors = 0
+                    n = yield send, (body, Bw)
+                    if n is not None:
+                        if n == 0:
+                            raise EOFError('pipe disconnected')
+                        Bw += n
             finally:
                 hub_remove(fd)
                 write_stats[proc.index] += 1
