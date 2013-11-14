@@ -6,9 +6,6 @@ import sys
 
 from functools import wraps
 
-from mock import Mock, patch
-from nose import SkipTest
-
 from billiard import current_process
 from kombu import Exchange, Queue
 
@@ -23,7 +20,10 @@ from celery.worker import state
 
 from celery.tests.case import (
     AppCase,
+    Mock,
+    SkipTest,
     WhateverIO,
+    patch,
     skip_if_pypy,
     skip_if_jython,
 )
@@ -71,7 +71,6 @@ class test_Worker(WorkerAppCase):
     def test_queues_string(self):
         w = self.app.Worker()
         w.setup_queues('foo,bar,baz')
-        self.assertEqual(w.queues, ['foo', 'bar', 'baz'])
         self.assertTrue('foo' in self.app.amqp.queues)
 
     @disable_stdouts
@@ -242,7 +241,7 @@ class test_Worker(WorkerAppCase):
         del(app.amqp.queues)
         c.CELERY_CREATE_MISSING_QUEUES = True
         worker = self.Worker(app=self.app)
-        worker.setup_queues(queues=['image'])
+        worker.setup_queues(['image'])
         self.assertIn('image', app.amqp.queues.consume_from)
         self.assertEqual(
             Queue('image', Exchange('image'), routing_key='image'),
@@ -258,14 +257,11 @@ class test_Worker(WorkerAppCase):
         self.assert_no_logging_side_effect()
 
     def test_include_argument(self):
-        worker1 = self.Worker(app=self.app, include='some.module')
-        self.assertListEqual(worker1.include, ['some.module'])
+        worker1 = self.Worker(app=self.app, include='os')
+        self.assertListEqual(worker1.include, ['os'])
         worker2 = self.Worker(app=self.app,
-                              include='some.module,another.package')
-        self.assertListEqual(
-            worker2.include,
-            ['some.module', 'another.package'],
-        )
+                              include='os,sys')
+        self.assertListEqual(worker2.include, ['os', 'sys'])
         self.Worker(app=self.app, include=['os', 'sys'])
 
     @disable_stdouts
@@ -281,18 +277,27 @@ class test_Worker(WorkerAppCase):
         if app.IS_WINDOWS:
             raise SkipTest('Not applicable on Windows')
 
-        def getuid():
-            return 0
-
-        prev, os.getuid = os.getuid, getuid
-        try:
-            with self.assertWarnsRegex(
-                    RuntimeWarning,
-                    r'superuser privileges is discouraged'):
+        with patch('os.getuid') as getuid:
+            getuid.return_value = 0
+            self.app.conf.CELERY_ACCEPT_CONTENT = ['pickle']
+            with self.assertRaises(RuntimeError):
                 worker = self.Worker(app=self.app)
                 worker.on_start()
-        finally:
-            os.getuid = prev
+            cd.C_FORCE_ROOT = True
+            try:
+                with self.assertWarnsRegex(
+                        RuntimeWarning,
+                        r'absolutely not recommended'):
+                    worker = self.Worker(app=self.app)
+                    worker.on_start()
+            finally:
+                cd.C_FORCE_ROOT = False
+            self.app.conf.CELERY_ACCEPT_CONTENT = ['json']
+            with self.assertWarnsRegex(
+                    RuntimeWarning,
+                    r'absolutely not recommended'):
+                worker = self.Worker(app=self.app)
+                worker.on_start()
 
     @disable_stdouts
     def test_redirect_stdouts(self):
@@ -639,10 +644,8 @@ class test_signal_handlers(WorkerAppCase):
 
     @disable_stdouts
     @patch('atexit.register')
-    @patch('os.fork')
     @patch('os.close')
-    def test_worker_restart_handler(self, _close, fork, register):
-        fork.return_value = 0
+    def test_worker_restart_handler(self, _close, register):
         if getattr(os, 'execv', None) is None:
             raise SkipTest('platform does not have excv')
         argv = []
@@ -660,10 +663,6 @@ class test_signal_handlers(WorkerAppCase):
             callback = register.call_args[0][0]
             callback()
             self.assertTrue(argv)
-            argv[:] = []
-            fork.return_value = 1
-            callback()
-            self.assertFalse(argv)
         finally:
             os.execv = execv
             state.should_stop = False

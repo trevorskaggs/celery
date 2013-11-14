@@ -3,9 +3,6 @@ from __future__ import absolute_import
 import errno
 import socket
 
-from mock import Mock, patch, call
-from nose import SkipTest
-
 from billiard.exceptions import RestartFreqExceeded
 
 from celery.datastructures import LimitedSet
@@ -21,14 +18,14 @@ from celery.worker.consumer import (
     CLOSE,
 )
 
-from celery.tests.case import AppCase
+from celery.tests.case import AppCase, Mock, SkipTest, call, patch
 
 
 class test_Consumer(AppCase):
 
     def get_consumer(self, no_hub=False, **kwargs):
         consumer = Consumer(
-            on_task=Mock(),
+            on_task_request=Mock(),
             init_callback=Mock(),
             pool=Mock(),
             app=self.app,
@@ -81,15 +78,15 @@ class test_Consumer(AppCase):
             c._limit_task(request, bucket, 3)
             bucket.can_consume.assert_called_with(3)
             reserved.assert_called_with(request)
-            c.on_task.assert_called_with(request)
+            c.on_task_request.assert_called_with(request)
 
         with patch('celery.worker.consumer.task_reserved') as reserved:
             bucket.can_consume.return_value = False
             bucket.expected_time.return_value = 3.33
             c._limit_task(request, bucket, 4)
             bucket.can_consume.assert_called_with(4)
-            c.timer.apply_after.assert_called_with(
-                3.33 * 1000.0, c._limit_task, (request, bucket, 4),
+            c.timer.call_after.assert_called_with(
+                3.33, c._limit_task, (request, bucket, 4),
             )
             bucket.expected_time.assert_called_with(4)
             self.assertFalse(reserved.called)
@@ -128,15 +125,9 @@ class test_Consumer(AppCase):
         c.start()
         c.connection.collect.assert_called_with()
 
-    def test_on_poll_init(self):
+    def test_register_with_event_loop(self):
         c = self.get_consumer()
-        c.connection = Mock()
-        c.connection.eventmap = {1: 2}
-        hub = Mock()
-        c.on_poll_init(hub)
-
-        hub.update_readers.assert_called_with({1: 2})
-        c.connection.transport.on_poll_init.assert_called_with(hub.poller)
+        c.register_with_event_loop(Mock(name='loop'))
 
     def test_on_close_clears_semaphore_timer_and_reqs(self):
         with patch('celery.worker.consumer.reserved_requests') as reserved:
@@ -188,7 +179,6 @@ class test_Tasks(AppCase):
         tasks = Tasks(c)
         self.assertIsNone(c.task_consumer)
         self.assertIsNone(c.qos)
-        self.assertEqual(tasks.initial_prefetch_count, 2)
 
         c.task_consumer = Mock()
         tasks.stop(c)
@@ -247,7 +237,7 @@ class test_Mingle(AppCase):
             }
 
             mingle.start(c)
-            I.hello.assert_called_with()
+            I.hello.assert_called_with(c.hostname, worker_state.revoked._data)
             c.app.clock.adjust.assert_has_calls([
                 call(312), call(29),
             ], any_order=True)
@@ -281,11 +271,11 @@ class test_Gossip(AppCase):
         g = Gossip(c)
         g.start(c)
 
-        with patch('celery.worker.consumer.subtask') as subtask:
-            sig = subtask.return_value = Mock()
+        with patch('celery.worker.consumer.signature') as signature:
+            sig = signature.return_value = Mock()
             task = Mock()
             g.call_task(task)
-            subtask.assert_called_with(task)
+            signature.assert_called_with(task, app=c.app)
             sig.apply_async.assert_called_with()
 
             sig.apply_async.side_effect = MemoryError()
@@ -403,9 +393,7 @@ class test_Gossip(AppCase):
         c = self.Consumer()
         g = Gossip(c)
         g.register_timer()
-        c.timer.apply_interval.assert_called_with(
-            g.interval * 1000.0, g.periodic,
-        )
+        c.timer.call_repeatedly.assert_called_with(g.interval, g.periodic)
         tref = g._tref
         g.register_timer()
         tref.cancel.assert_called_with()

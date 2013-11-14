@@ -8,221 +8,19 @@
 """
 from __future__ import absolute_import
 
-import heapq
 import os
 import sys
 import threading
 
-from datetime import datetime
-from functools import wraps
 from itertools import count
-from time import time, sleep
-from weakref import proxy as weakrefproxy
+from time import sleep
 
 from celery.five import THREAD_TIMEOUT_MAX
-from celery.utils.timeutils import timedelta_seconds, timezone
-from kombu.log import get_logger
+from kombu.async.timer import Entry, Timer as Schedule, to_timestamp, logger
 
-VERSION = (1, 0, 0)
-__version__ = '.'.join(str(p) for p in VERSION)
-__author__ = 'Ask Solem'
-__contact__ = 'ask@celeryproject.org'
-__homepage__ = 'http://github.com/ask/timer2/'
-__docformat__ = 'restructuredtext'
-
-DEFAULT_MAX_INTERVAL = 2
 TIMER_DEBUG = os.environ.get('TIMER_DEBUG')
-EPOCH = datetime.utcfromtimestamp(0).replace(tzinfo=timezone.utc)
-IS_PYPY = hasattr(sys, 'pypy_version_info')
-
-logger = get_logger('timer2')
 
 __all__ = ['Entry', 'Schedule', 'Timer', 'to_timestamp']
-
-
-class Entry(object):
-    if not IS_PYPY:  # pragma: no cover
-        __slots__ = (
-            'fun', 'args', 'kwargs', 'tref', 'cancelled',
-            '_last_run', '__weakref__',
-        )
-
-    def __init__(self, fun, args=None, kwargs=None):
-        self.fun = fun
-        self.args = args or []
-        self.kwargs = kwargs or {}
-        self.tref = weakrefproxy(self)
-        self._last_run = None
-        self.cancelled = False
-
-    def __call__(self):
-        return self.fun(*self.args, **self.kwargs)
-
-    def cancel(self):
-        try:
-            self.tref.cancelled = True
-        except ReferenceError:  # pragma: no cover
-            pass
-
-    def __repr__(self):
-        return '<TimerEntry: {0}(*{1!r}, **{2!r})'.format(
-            self.fun.__name__, self.args, self.kwargs)
-
-    if sys.version_info[0] == 3:  # pragma: no cover
-
-        def __hash__(self):
-            return hash('{0.fun!r}|{0.args!r}|{0.kwargs!r}'.format(self))
-
-        def __lt__(self, other):
-            return hash(self) < hash(other)
-
-        def __gt__(self, other):
-            return hash(self) > hash(other)
-
-        def __eq__(self, other):
-            return hash(self) == hash(other)
-
-        def __ne__(self, other):
-            return not self.__eq__(other)
-
-
-def to_timestamp(d, default_timezone=timezone.utc):
-    if isinstance(d, datetime):
-        if d.tzinfo is None:
-            d = d.replace(tzinfo=default_timezone)
-        return timedelta_seconds(d - EPOCH)
-    return d
-
-
-class Schedule(object):
-    """ETA scheduler."""
-    Entry = Entry
-
-    on_error = None
-
-    def __init__(self, max_interval=None, on_error=None, **kwargs):
-        self.max_interval = float(max_interval or DEFAULT_MAX_INTERVAL)
-        self.on_error = on_error or self.on_error
-        self._queue = []
-
-    def apply_entry(self, entry):
-        try:
-            entry()
-        except Exception as exc:
-            if not self.handle_error(exc):
-                logger.error('Error in timer: %r', exc, exc_info=True)
-
-    def handle_error(self, exc_info):
-        if self.on_error:
-            self.on_error(exc_info)
-            return True
-
-    def stop(self):
-        pass
-
-    def enter(self, entry, eta=None, priority=0):
-        """Enter function into the scheduler.
-
-        :param entry: Item to enter.
-        :keyword eta: Scheduled time as a :class:`datetime.datetime` object.
-        :keyword priority: Unused.
-
-        """
-        if eta is None:
-            eta = time()
-        if isinstance(eta, datetime):
-            try:
-                eta = to_timestamp(eta)
-            except Exception as exc:
-                if not self.handle_error(exc):
-                    raise
-                return
-        return self._enter(eta, priority, entry)
-
-    def _enter(self, eta, priority, entry):
-        heapq.heappush(self._queue, (eta, priority, entry))
-        return entry
-
-    def apply_at(self, eta, fun, args=(), kwargs={}, priority=0):
-        return self.enter(self.Entry(fun, args, kwargs), eta, priority)
-
-    def enter_after(self, msecs, entry, priority=0, time=time):
-        return self.enter(entry, time() + (msecs / 1000.0), priority)
-
-    def apply_after(self, msecs, fun, args=(), kwargs={}, priority=0):
-        return self.enter_after(msecs, self.Entry(fun, args, kwargs), priority)
-
-    def apply_interval(self, msecs, fun, args=(), kwargs={}, priority=0):
-        tref = self.Entry(fun, args, kwargs)
-        secs = msecs * 1000.0
-
-        @wraps(fun)
-        def _reschedules(*args, **kwargs):
-            last, now = tref._last_run, time()
-            lsince = (now - tref._last_run) * 1000.0 if last else msecs
-            try:
-                if lsince and lsince >= msecs:
-                    tref._last_run = now
-                    return fun(*args, **kwargs)
-            finally:
-                if not tref.cancelled:
-                    last = tref._last_run
-                    next = secs - (now - last) if last else secs
-                    self.enter_after(next / 1000.0, tref, priority)
-
-        tref.fun = _reschedules
-        tref._last_run = None
-        return self.enter_after(msecs, tref, priority)
-
-    @property
-    def schedule(self):
-        return self
-
-    def __iter__(self, min=min, nowfun=time, pop=heapq.heappop,
-                 push=heapq.heappush):
-        """The iterator yields the time to sleep for between runs."""
-        max_interval = self.max_interval
-        queue = self._queue
-
-        while 1:
-            if queue:
-                eta, priority, entry = verify = queue[0]
-                now = nowfun()
-
-                if now < eta:
-                    yield min(eta - now, max_interval), None
-                else:
-                    event = pop(queue)
-
-                    if event is verify:
-                        if not entry.cancelled:
-                            yield None, entry
-                        continue
-                    else:
-                        push(queue, event)
-            else:
-                yield None, None
-
-    def empty(self):
-        """Is the schedule empty?"""
-        return not self._queue
-
-    def clear(self):
-        self._queue[:] = []  # used because we can't replace the object
-                             # and the operation is atomic.
-
-    def info(self):
-        return ({'eta': eta, 'priority': priority, 'item': item}
-                for eta, priority, item in self.queue)
-
-    def cancel(self, tref):
-        tref.cancel()
-
-    @property
-    def queue(self, _pop=heapq.heappop):
-        """Snapshot of underlying datastructure."""
-        events = list(self._queue)
-        return [_pop(v) for v in [events] * len(events)]
 
 
 class Timer(threading.Thread):
@@ -308,22 +106,22 @@ class Timer(threading.Thread):
             return entry
 
     def enter(self, entry, eta, priority=None):
-        return self._do_enter('enter', entry, eta, priority=priority)
+        return self._do_enter('enter_at', entry, eta, priority=priority)
 
-    def apply_at(self, *args, **kwargs):
-        return self._do_enter('apply_at', *args, **kwargs)
+    def call_at(self, *args, **kwargs):
+        return self._do_enter('call_at', *args, **kwargs)
 
     def enter_after(self, *args, **kwargs):
         return self._do_enter('enter_after', *args, **kwargs)
 
-    def apply_after(self, *args, **kwargs):
-        return self._do_enter('apply_after', *args, **kwargs)
+    def call_after(self, *args, **kwargs):
+        return self._do_enter('call_after', *args, **kwargs)
 
-    def apply_interval(self, *args, **kwargs):
-        return self._do_enter('apply_interval', *args, **kwargs)
+    def call_repeatedly(self, *args, **kwargs):
+        return self._do_enter('call_repeatedly', *args, **kwargs)
 
-    def exit_after(self, msecs, priority=10):
-        self.apply_after(msecs, sys.exit, priority)
+    def exit_after(self, secs, priority=10):
+        self.call_after(secs, sys.exit, priority)
 
     def cancel(self, tref):
         tref.cancel()
@@ -332,7 +130,14 @@ class Timer(threading.Thread):
         self.schedule.clear()
 
     def empty(self):
-        return self.schedule.empty()
+        return not len(self)
+
+    def __len__(self):
+        return len(self.schedule)
+
+    def __bool__(self):
+        return True
+    __nonzero__ = __bool__
 
     @property
     def queue(self):

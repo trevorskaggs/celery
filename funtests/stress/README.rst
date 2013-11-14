@@ -56,14 +56,79 @@ Ideas include:
 
 ::
 
-    $ celery -A stress worker -c1 --maxtasksperchild=1 -- celery.acks_late=1
+    $ celery -A stress worker -c1 --maxtasksperchild=1 -Z acks_late
 
 
-It's a good idea to include the ``--purge`` argument to clear out tasks from
+8) Worker using eventlet pool.
+
+    Start the worker::
+
+        $ celery -A stress worker -c1000 -P eventlet
+
+    Then must use the `-g green` test group::
+
+        $ python -m stress -g green
+
+9) Worker using gevent pool.
+
+It's also a good idea to include the ``--purge`` argument to clear out tasks from
 previous runs.
 
 Note that the stress client will probably hang if the test fails, so this
 test suite is currently not suited for automatic runs.
+
+Configuration Templates
+-----------------------
+
+You can select a configuration template using the `-Z` command-line argument
+to any :program:`celery -A stress` command or the :program:`python -m stress`
+command when running the test suite itself.
+
+The templates available are:
+
+* default
+
+    Using amqp as a broker and rpc as a result backend,
+    and also using json for task and result messages.
+
+* redis
+
+    Using redis as a broker and result backend
+
+* acks_late
+
+    Enables late ack globally.
+
+* pickle
+
+    Using pickle as the serializer for tasks and results
+    (also allowing the worker to receive and process pickled messages)
+
+
+You can see the resulting configuration from any template by running
+the command::
+
+    $ celery -A stress report -Z redis
+
+
+Example running the stress test using the ``redis`` configuration template::
+
+    $ python -m stress -Z redis
+
+Example running the worker using the ``redis`` configuration template::
+
+    $ celery -A stress worker -Z redis
+
+
+You can also mix several templates by listing them separated by commas::
+
+    $ celery -A stress worker -Z redis,acks_late
+
+In this example (``redis,acks_late``) the ``redis`` template will be used
+as a configuration, and then additional keys from the ``acks_late`` template
+will be added on top as changes::
+
+    $ celery -A stress report -Z redis,acks_late,pickle
 
 Running the client
 ------------------
@@ -94,7 +159,7 @@ Using a different result backend
 You can set the environment variable ``CSTRESS_BACKEND`` to change
 the result backend used::
 
-    $ CSTRESS_BACKEND='amqp://' celery -A stress worker #...
+    $ CSTRESS_BACKEND='amqp://' celery -A stress worker # …
     $ CSTRESS_BACKEND='amqp://' python -m stress
 
 Using a custom queue

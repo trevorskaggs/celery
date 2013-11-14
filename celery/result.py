@@ -18,13 +18,25 @@ from kombu.utils.compat import OrderedDict
 
 from . import current_app
 from . import states
+from ._state import task_join_will_block
 from .app import app_or_default
 from .datastructures import DependencyGraph, GraphFormatter
 from .exceptions import IncompleteStream, TimeoutError
-from .five import items, range, string_t
+from .five import items, range, string_t, monotonic
 
 __all__ = ['ResultBase', 'AsyncResult', 'ResultSet', 'GroupResult',
-           'EagerResult', 'from_serializable']
+           'EagerResult', 'result_from_tuple']
+
+E_WOULDBLOCK = """\
+Never call result.get() within a task!
+See http://docs.celeryq.org/en/latest/userguide/tasks.html\
+#task-synchronous-subtasks
+"""
+
+
+def assert_will_not_block():
+    if task_join_will_block():
+        pass   # TODO future version: raise
 
 
 class ResultBase(object):
@@ -60,14 +72,17 @@ class AsyncResult(ResultBase):
         self.task_name = task_name
         self.parent = parent
 
-    def serializable(self):
-        return [self.id, self.parent and self.parent.serializable()], None
+    def as_tuple(self):
+        parent = self.parent
+        return (self.id, parent and parent.as_tuple()), None
+    serializable = as_tuple   # XXX compat
 
     def forget(self):
         """Forget about (and possibly remove the result of) this task."""
         self.backend.forget(self.id)
 
-    def revoke(self, connection=None, terminate=False, signal=None):
+    def revoke(self, connection=None, terminate=False, signal=None,
+               wait=False, timeout=None):
         """Send revoke signal to all workers.
 
         Any worker receiving the task, or having reserved the
@@ -77,10 +92,15 @@ class AsyncResult(ResultBase):
             on the task (if any).
         :keyword signal: Name of signal to send to process if terminate.
             Default is TERM.
+        :keyword wait: Wait for replies from workers.  Will wait for 1 second
+           by default or you can specify a custom ``timeout``.
+        :keyword timeout: Time in seconds to wait for replies if ``wait``
+                          enabled.
 
         """
         self.app.control.revoke(self.id, connection=connection,
-                                terminate=terminate, signal=signal)
+                                terminate=terminate, signal=signal,
+                                reply=wait, timeout=timeout)
 
     def get(self, timeout=None, propagate=True, interval=0.5):
         """Wait until task is ready, and return its result.
@@ -106,6 +126,7 @@ class AsyncResult(ResultBase):
         be re-raised.
 
         """
+        assert_will_not_block()
         if propagate and self.parent:
             for node in reversed(list(self._parents())):
                 node.get(propagate=True, timeout=timeout, interval=interval)
@@ -145,6 +166,8 @@ class AsyncResult(ResultBase):
         Calling :meth:`collect` would return:
 
         .. code-block:: python
+
+            >>> from proj.tasks import A
 
             >>> result = A.delay(10)
             >>> list(result.collect())
@@ -243,7 +266,7 @@ class AsyncResult(ResultBase):
     def children(self):
         children = self.backend.get_children(self.id)
         if children:
-            return [from_serializable(child, self.app) for child in children]
+            return [result_from_tuple(child, self.app) for child in children]
 
     @property
     def result(self):
@@ -327,7 +350,7 @@ class ResultSet(ResultBase):
             self.results.append(result)
 
     def remove(self, result):
-        """Removes result from the set; it must be a member.
+        """Remove result from the set; it must be a member.
 
         :raises KeyError: if the result is not a member.
 
@@ -408,18 +431,23 @@ class ResultSet(ResultBase):
         for result in self.results:
             result.forget()
 
-    def revoke(self, connection=None, terminate=False, signal=None):
+    def revoke(self, connection=None, terminate=False, signal=None,
+               wait=False, timeout=None):
         """Send revoke signal to all workers for all tasks in the set.
 
         :keyword terminate: Also terminate the process currently working
             on the task (if any).
         :keyword signal: Name of signal to send to process if terminate.
             Default is TERM.
+        :keyword wait: Wait for replies from worker.  Will wait for 1 second
+           by default or you can specify a custom ``timeout``.
+        :keyword timeout: Time in seconds to wait for replies if ``wait``
+                          enabled.
 
         """
         self.app.control.revoke([r.id for r in self.results],
-                                connection=connection,
-                                terminate=terminate, signal=signal)
+                                connection=connection, timeout=timeout,
+                                terminate=terminate, signal=signal, reply=wait)
 
     def __iter__(self):
         return iter(self.results)
@@ -456,7 +484,7 @@ class ResultSet(ResultBase):
             if timeout and elapsed >= timeout:
                 raise TimeoutError('The operation timed out')
 
-    def get(self, timeout=None, propagate=True, interval=0.5):
+    def get(self, timeout=None, propagate=True, interval=0.5, callback=None):
         """See :meth:`join`
 
         This is here for API compatibility with :class:`AsyncResult`,
@@ -465,9 +493,10 @@ class ResultSet(ResultBase):
 
         """
         return (self.join_native if self.supports_native_join else self.join)(
-            timeout=timeout, propagate=propagate, interval=interval)
+            timeout=timeout, propagate=propagate,
+            interval=interval, callback=callback)
 
-    def join(self, timeout=None, propagate=True, interval=0.5):
+    def join(self, timeout=None, propagate=True, interval=0.5, callback=None):
         """Gathers the results of all tasks as a list in order.
 
         .. note::
@@ -494,24 +523,35 @@ class ResultSet(ResultBase):
                            does not have any effect when using the amqp
                            result store backend, as it does not use polling.
 
+        :keyword callback: Optional callback to be called for every result
+                           received.  Must have signature ``(task_id, value)``
+                           No results will be returned by this function if
+                           a callback is specified.  The order of results
+                           is also arbitrary when a callback is used.
+
         :raises celery.exceptions.TimeoutError: if `timeout` is not
             :const:`None` and the operation takes longer than `timeout`
             seconds.
 
         """
-        time_start = time.time()
+        assert_will_not_block()
+        time_start = monotonic()
         remaining = None
 
         results = []
         for result in self.results:
             remaining = None
             if timeout:
-                remaining = timeout - (time.time() - time_start)
+                remaining = timeout - (monotonic() - time_start)
                 if remaining <= 0.0:
                     raise TimeoutError('join operation timed out')
-            results.append(result.get(timeout=remaining,
-                                      propagate=propagate,
-                                      interval=interval))
+            value = result.get(timeout=remaining,
+                               propagate=propagate,
+                               interval=interval)
+            if callback:
+                callback(result.id, value)
+            else:
+                results.append(value)
         return results
 
     def iter_native(self, timeout=None, interval=0.5):
@@ -526,13 +566,15 @@ class ResultSet(ResultBase):
         result backends.
 
         """
-        if not self.results:
+        results = self.results
+        if not results:
             return iter([])
-        backend = self.results[0].backend
-        ids = [result.id for result in self.results]
-        return backend.get_many(ids, timeout=timeout, interval=interval)
+        return results[0].backend.get_many(
+            set(r.id for r in results), timeout=timeout, interval=interval,
+        )
 
-    def join_native(self, timeout=None, propagate=True, interval=0.5):
+    def join_native(self, timeout=None, propagate=True,
+                    interval=0.5, callback=None):
         """Backend optimized version of :meth:`join`.
 
         .. versionadded:: 2.2
@@ -544,13 +586,19 @@ class ResultSet(ResultBase):
         result backends.
 
         """
-        results = self.results
-        acc = [None for _ in range(len(self))]
-        for task_id, meta in self.iter_native(timeout=timeout,
-                                              interval=interval):
+        assert_will_not_block()
+        order_index = None if callback else dict(
+            (result.id, i) for i, result in enumerate(self.results)
+        )
+        acc = None if callback else [None for _ in range(len(self))]
+        for task_id, meta in self.iter_native(timeout, interval):
+            value = meta['result']
             if propagate and meta['status'] in states.PROPAGATE_STATES:
-                raise meta['result']
-            acc[results.index(task_id)] = meta['result']
+                raise value
+            if callback:
+                callback(task_id, value)
+            else:
+                acc[order_index[task_id]] = value
         return acc
 
     def _failed_join_report(self):
@@ -612,8 +660,9 @@ class GroupResult(ResultSet):
 
         Example::
 
-            >>> result.save()
-            >>> result = GroupResult.restore(group_id)
+            >>> def save_and_restore(result):
+            ...     result.save()
+            ...     result = GroupResult.restore(result.id)
 
         """
         return (backend or self.app.backend).save_group(self.id, self)
@@ -640,8 +689,9 @@ class GroupResult(ResultSet):
         return '<{0}: {1} [{2}]>'.format(type(self).__name__, self.id,
                                          ', '.join(r.id for r in self.results))
 
-    def serializable(self):
-        return self.id, [r.serializable() for r in self.results]
+    def as_tuple(self):
+        return self.id, [r.as_tuple() for r in self.results]
+    serializable = as_tuple   # XXX compat
 
     @property
     def children(self):
@@ -651,7 +701,7 @@ class GroupResult(ResultSet):
     def restore(self, id, backend=None):
         """Restore previously saved group result."""
         return (
-            backend or self.app.backend if self.app else current_app.backend
+            backend or (self.app.backend if self.app else current_app.backend)
         ).restore_group(id)
 
 
@@ -746,7 +796,7 @@ class EagerResult(AsyncResult):
         return False
 
 
-def from_serializable(r, app=None):
+def result_from_tuple(r, app=None):
     # earlier backends may just pickle, so check if
     # result is already prepared.
     app = app_or_default(app)
@@ -755,11 +805,12 @@ def from_serializable(r, app=None):
         res, nodes = r
         if nodes:
             return app.GroupResult(
-                res, [from_serializable(child, app) for child in nodes],
+                res, [result_from_tuple(child, app) for child in nodes],
             )
         # previously did not include parent
         id, parent = res if isinstance(res, (list, tuple)) else (res, None)
         if parent:
-            parent = from_serializable(parent, app)
+            parent = result_from_tuple(parent, app)
         return Result(id, parent=parent)
     return r
+from_serializable = result_from_tuple  # XXX compat

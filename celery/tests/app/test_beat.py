@@ -3,15 +3,13 @@ from __future__ import absolute_import
 import errno
 
 from datetime import datetime, timedelta
-from mock import Mock, call, patch
-from nose import SkipTest
 from pickle import dumps, loads
 
 from celery import beat
 from celery.five import keys, string_t
 from celery.schedules import schedule
 from celery.utils import uuid
-from celery.tests.case import AppCase
+from celery.tests.case import AppCase, Mock, SkipTest, call, patch
 
 
 class Object(object):
@@ -462,7 +460,8 @@ class test_EmbeddedService(AppCase):
             def terminate(self):
                 self.terminated = True
 
-        s.run()
+        with patch('celery.platforms.close_open_fds'):
+            s.run()
         self.assertTrue(s.service.started)
 
         s._popen = _Popen()

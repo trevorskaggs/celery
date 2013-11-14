@@ -3,7 +3,6 @@ from __future__ import absolute_import
 import os
 
 from contextlib import contextmanager
-from mock import Mock, patch
 
 from celery.fixups.django import (
     _maybe_close_fd,
@@ -11,7 +10,9 @@ from celery.fixups.django import (
     DjangoFixup,
 )
 
-from celery.tests.case import AppCase, patch_many, patch_modules, mask_modules
+from celery.tests.case import (
+    AppCase, Mock, patch, patch_many, patch_modules, mask_modules,
+)
 
 
 class test_DjangoFixup(AppCase):
@@ -140,12 +141,22 @@ class test_DjangoFixup(AppCase):
                 self.assertFalse(f.close_database.called)
 
     def test_on_task_postrun(self):
+        task = Mock()
         with self.fixup_context(self.app) as (f, _, _):
-            with patch.object(f, 'close_database'):
-                with patch.object(f, 'close_cache'):
-                    f.on_task_postrun()
-                    f.close_database.assert_called_with()
-                    f.close_cache.assert_called_with()
+            with patch.object(f, 'close_cache'):
+                task.request.is_eager = False
+                with patch.object(f, 'close_database'):
+                    f.on_task_postrun(task)
+                    self.assertTrue(f.close_database.called)
+                    self.assertTrue(f.close_cache.called)
+
+            # when a task is eager, do not close connections
+            with patch.object(f, 'close_cache'):
+                task.request.is_eager = True
+                with patch.object(f, 'close_database'):
+                    f.on_task_postrun(task)
+                    self.assertFalse(f.close_database.called)
+                    self.assertFalse(f.close_cache.called)
 
     def test_close_database(self):
         with self.fixup_context(self.app) as (f, _, _):

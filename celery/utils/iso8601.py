@@ -4,7 +4,7 @@ Originally taken from pyiso8601 (http://code.google.com/p/pyiso8601/)
 Modified to match the behavior of dateutil.parser:
 
     - raise ValueError instead of ParseError
-    - returns naive datetimes by default
+    - return naive datetimes by default
     - uses pytz.FixedOffset
 
 This is the original License:
@@ -53,7 +53,7 @@ TIMEZONE_REGEX = re.compile(
 
 
 def parse_iso8601(datestring):
-    """Parses ISO 8601 dates into datetime objects"""
+    """Parse and convert ISO 8601 string into a datetime object"""
     m = ISO8601_REGEX.match(datestring)
     if not m:
         raise ValueError('unable to parse date string %r' % datestring)

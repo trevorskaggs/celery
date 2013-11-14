@@ -2,14 +2,13 @@ from __future__ import absolute_import
 
 from collections import defaultdict
 from contextlib import contextmanager
-from mock import Mock, patch
 
 from kombu.utils.limits import TokenBucket
 
 from celery.worker import state
 from celery.utils.timeutils import rate
 
-from celery.tests.case import AppCase, body_from_sig
+from celery.tests.case import AppCase, Mock, patch, body_from_sig
 
 
 class test_default_strategy(AppCase):
@@ -32,7 +31,10 @@ class test_default_strategy(AppCase):
             self.body = body
 
         def __call__(self, **kwargs):
-            return self.s(self.message, self.body, self.message.ack, **kwargs)
+            return self.s(
+                self.message, self.body,
+                self.message.ack, self.message.reject, [], **kwargs
+            )
 
         def was_reserved(self):
             return self.reserved.called
@@ -44,7 +46,7 @@ class test_default_strategy(AppCase):
         def was_scheduled(self):
             assert not self.was_reserved()
             assert not self.was_rate_limited()
-            return self.consumer.timer.apply_at.called
+            return self.consumer.timer.call_at.called
 
         def event_sent(self):
             return self.consumer.event_dispatcher.send.call_args
@@ -55,7 +57,7 @@ class test_default_strategy(AppCase):
             if self.was_rate_limited():
                 return self.consumer._limit_task.call_args[0][0]
             if self.was_scheduled():
-                return self.consumer.timer.apply_at.call_args[0][0]
+                return self.consumer.timer.call_at.call_args[0][0]
             raise ValueError('request not handled')
 
     @contextmanager
@@ -91,7 +93,7 @@ class test_default_strategy(AppCase):
             C()
             self.assertTrue(C.was_reserved())
             req = C.get_request()
-            C.consumer.on_task.assert_called_with(req)
+            C.consumer.on_task_request.assert_called_with(req)
             self.assertTrue(C.event_sent())
 
     def test_when_events_disabled(self):

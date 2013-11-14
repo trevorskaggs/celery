@@ -17,6 +17,8 @@ import platform as _platform
 import signal as _signal
 import sys
 
+from collections import namedtuple
+
 from billiard import current_process
 # fileno used to be in this module
 from kombu.utils import maybe_fileno
@@ -25,7 +27,8 @@ from kombu.utils.encoding import safe_str
 from contextlib import contextmanager
 
 from .local import try_import
-from .five import items, range, reraise, string_t
+from .five import items, range, reraise, string_t, zip_longest
+from .utils.functional import uniq
 
 _setproctitle = try_import('setproctitle')
 resource = try_import('resource')
@@ -59,9 +62,11 @@ PIDFILE_MODE = ((os.R_OK | os.W_OK) << 6) | ((os.R_OK) << 3) | ((os.R_OK))
 PIDLOCKED = """ERROR: Pidfile ({0}) already exists.
 Seems we're already running? (pid: {1})"""
 
+_range = namedtuple('_range', ('start', 'stop'))
+
 
 def pyimplementation():
-    """Returns string identifying the current Python implementation."""
+    """Return string identifying the current Python implementation."""
     if hasattr(_platform, 'python_implementation'):
         return _platform.python_implementation()
     elif sys.platform.startswith('java'):
@@ -75,51 +80,24 @@ def pyimplementation():
         return 'CPython'
 
 
-def _find_option_with_arg(argv, short_opts=None, long_opts=None):
-    """Search argv for option specifying its short and longopt
-    alternatives.
-
-    Returns the value of the option if found.
-
-    """
-    for i, arg in enumerate(argv):
-        if arg.startswith('-'):
-            if long_opts and arg.startswith('--'):
-                name, _, val = arg.partition('=')
-                if name in long_opts:
-                    return val
-            if short_opts and arg in short_opts:
-                return argv[i + 1]
-    raise KeyError('|'.join(short_opts or [] + long_opts or []))
-
-
-def maybe_patch_concurrency(argv, short_opts=None, long_opts=None):
-    """With short and long opt alternatives that specify the command line
-    option to set the pool, this makes sure that anything that needs
-    to be patched is completed as early as possible.
-    (e.g. eventlet/gevent monkey patches)."""
-    try:
-        pool = _find_option_with_arg(argv, short_opts, long_opts)
-    except KeyError:
-        pass
-    else:
-        # set up eventlet/gevent environments ASAP.
-        from celery import concurrency
-        concurrency.get_implementation(pool)
-
-
 class LockFailed(Exception):
     """Raised if a pidlock can't be acquired."""
 
 
 def get_fdmax(default=None):
-    """Returns the maximum number of open file descriptors
+    """Return the maximum number of open file descriptors
     on this system.
 
     :keyword default: Value returned if there's no file
                       descriptor limit.
 
     """
+    try:
+        return os.sysconf('SC_OPEN_MAX')
+    except:
+        pass
+    if resource is None:  # Windows
+        return default
     fdmax = resource.getrlimit(resource.RLIMIT_NOFILE)[1]
     if fdmax == resource.RLIM_INFINITY:
         return default
@@ -153,7 +131,7 @@ class Pidfile(object):
     __enter__ = acquire
 
     def is_locked(self):
-        """Returns true if the pid lock exists."""
+        """Return true if the pid lock exists."""
         return os.path.exists(self.path)
 
     def release(self, *args):
@@ -162,7 +140,7 @@ class Pidfile(object):
     __exit__ = release
 
     def read_pid(self):
-        """Reads and returns the current pid."""
+        """Read and return the current pid."""
         with ignore_errno('ENOENT'):
             with open(self.path, 'r') as fh:
                 line = fh.readline()
@@ -177,12 +155,12 @@ class Pidfile(object):
                         'pidfile {0.path} contents invalid.'.format(self))
 
     def remove(self):
-        """Removes the lock."""
+        """Remove the lock."""
         with ignore_errno(errno.ENOENT, errno.EACCES):
             os.unlink(self.path)
 
     def remove_if_stale(self):
-        """Removes the lock if the process is not running.
+        """Remove the lock if the process is not running.
         (does not respond to signals)."""
         try:
             pid = self.read_pid()
@@ -263,12 +241,27 @@ def _create_pidlock(pidfile):
     return pidlock
 
 
-def close_open_fds(keep=None):
-    keep = [maybe_fileno(f) for f in keep if maybe_fileno(f)] if keep else []
-    for fd in reversed(range(get_fdmax(default=2048))):
-        if fd not in keep:
-            with ignore_errno(errno.EBADF):
-                os.close(fd)
+if hasattr(os, 'closerange'):
+
+    def close_open_fds(keep=None):
+        keep = [maybe_fileno(f)
+                for f in uniq(sorted(keep or []))
+                if maybe_fileno(f) is not None]
+        maxfd = get_fdmax(default=2048)
+        kL, kH = iter([-1] + keep), iter(keep + [maxfd])
+        for low, high in zip_longest(kL, kH):
+            if low + 1 != high:
+                os.closerange(low + 1, high)
+
+else:
+
+    def close_open_fds(keep=None):  # noqa
+        keep = [maybe_fileno(f)
+                for f in (keep or []) if maybe_fileno(f) is not None]
+        for fd in reversed(range(get_fdmax(default=2048))):
+            if fd not in keep:
+                with ignore_errno(errno.EBADF):
+                    os.close(fd)
 
 
 class DaemonContext(object):
@@ -525,6 +518,7 @@ class Signals(object):
 
         >>> from celery.platforms import signals
 
+        >>> from proj.handlers import my_handler
         >>> signals['INT'] = my_handler
 
         >>> signals['INT']
@@ -544,6 +538,7 @@ class Signals(object):
         >>> signals['USR1'] == signals.default
         True
 
+        >>> from proj.handlers import exit_handler, hup_handler
         >>> signals.update(INT=exit_handler,
         ...                TERM=exit_handler,
         ...                HUP=hup_handler)
@@ -573,7 +568,7 @@ class Signals(object):
         return _signal.alarm(0)
 
     def supported(self, signal_name):
-        """Returns true value if ``signal_name`` exists on this platform."""
+        """Return true value if ``signal_name`` exists on this platform."""
         try:
             return self.signum(signal_name)
         except AttributeError:
@@ -688,8 +683,8 @@ def ignore_errno(*errnos, **kwargs):
     the name of the code, or the code integer itself::
 
         >>> with ignore_errno('ENOENT'):
-        ...     with open('foo', 'r'):
-        ...         return r.read()
+        ...     with open('foo', 'r') as fh:
+        ...         return fh.read()
 
         >>> with ignore_errno(errno.ENOENT, errno.EPERM):
         ...    pass

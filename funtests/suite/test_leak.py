@@ -9,16 +9,13 @@ import subprocess
 sys.path.insert(0, os.getcwd())
 sys.path.insert(0, os.path.join(os.getcwd(), os.pardir))
 
-from nose import SkipTest
-
 from celery import current_app
 from celery.five import range
-from celery.tests.utils import unittest
+from celery.tests.case import SkipTest, unittest
 
 import suite  # noqa
 
 GET_RSIZE = '/bin/ps -p {pid} -o rss='
-QUICKTEST = int(os.environ.get('QUICKTEST', 0))
 
 
 class Sizes(list):
@@ -92,8 +89,7 @@ class LeakFunCase(unittest.TestCase):
 
 class test_leaks(LeakFunCase):
 
-    def test_task_apply_leak(self):
-        its = QUICKTEST and 10 or 1000
+    def test_task_apply_leak(self, its=1000):
         self.assertNotEqual(self.app.conf.BROKER_TRANSPORT, 'memory')
 
         @self.app.task
@@ -112,8 +108,7 @@ class test_leaks(LeakFunCase):
         finally:
             self.app.conf.BROKER_POOL_LIMIT = pool_limit
 
-    def test_task_apply_leak_with_pool(self):
-        its = QUICKTEST and 10 or 1000
+    def test_task_apply_leak_with_pool(self, its=1000):
         self.assertNotEqual(self.app.conf.BROKER_TRANSPORT, 'memory')
 
         @self.app.task

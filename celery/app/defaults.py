@@ -10,7 +10,7 @@ from __future__ import absolute_import
 
 import sys
 
-from collections import deque
+from collections import deque, namedtuple
 from datetime import timedelta
 
 from celery.five import items
@@ -22,15 +22,14 @@ __all__ = ['Option', 'NAMESPACES', 'flatten', 'find']
 is_jython = sys.platform.startswith('java')
 is_pypy = hasattr(sys, 'pypy_version_info')
 
-DEFAULT_POOL = 'processes'
+DEFAULT_POOL = 'prefork'
 if is_jython:
     DEFAULT_POOL = 'threads'
 elif is_pypy:
     if sys.pypy_version_info[0:3] < (1, 5, 0):
         DEFAULT_POOL = 'solo'
     else:
-        DEFAULT_POOL = 'processes'
-
+        DEFAULT_POOL = 'prefork'
 
 DEFAULT_ACCEPT_CONTENT = ['json', 'pickle', 'msgpack', 'yaml']
 DEFAULT_PROCESS_LOG_FMT = """
@@ -40,9 +39,12 @@ DEFAULT_LOG_FMT = '[%(asctime)s: %(levelname)s] %(message)s'
 DEFAULT_TASK_LOG_FMT = """[%(asctime)s: %(levelname)s/%(processName)s] \
 %(task_name)s[%(task_id)s]: %(message)s"""
 
-_BROKER_OLD = {'deprecate_by': '2.5', 'remove_by': '4.0', 'alt': 'BROKER_URL'}
+_BROKER_OLD = {'deprecate_by': '2.5', 'remove_by': '4.0',
+               'alt': 'BROKER_URL setting'}
 _REDIS_OLD = {'deprecate_by': '2.5', 'remove_by': '4.0',
               'alt': 'URL form of CELERY_RESULT_BACKEND'}
+
+searchresult = namedtuple('searchresult', ('namespace', 'key', 'type'))
 
 
 class Option(object):
@@ -71,6 +73,7 @@ NAMESPACES = {
         'CONNECTION_TIMEOUT': Option(4, type='float'),
         'CONNECTION_RETRY': Option(True, type='bool'),
         'CONNECTION_MAX_RETRIES': Option(100, type='int'),
+        'FAILOVER_STRATEGY': Option(None, type='string'),
         'HEARTBEAT': Option(None, type='int'),
         'HEARTBEAT_CHECKRATE': Option(3.0, type='int'),
         'LOGIN_METHOD': Option(None, type='string'),
@@ -138,7 +141,7 @@ NAMESPACES = {
         'RESULT_EXCHANGE': Option('celeryresults'),
         'RESULT_EXCHANGE_TYPE': Option('direct'),
         'RESULT_SERIALIZER': Option('pickle'),
-        'RESULT_PERSISTENT': Option(False, type='bool'),
+        'RESULT_PERSISTENT': Option(None, type='bool'),
         'ROUTES': Option(type='any'),
         'SEND_EVENTS': Option(False, type='bool'),
         'SEND_TASK_ERROR_EMAILS': Option(False, type='bool'),
@@ -240,7 +243,7 @@ def find_deprecated_settings(source):
             warn_deprecated(description='The {0!r} setting'.format(name),
                             deprecation=opt.deprecate_by,
                             removal=opt.remove_by,
-                            alternative='Use {0.alt} instead'.format(opt))
+                            alternative='Use the {0.alt} instead'.format(opt))
     return source
 
 
@@ -249,16 +252,18 @@ def find(name, namespace='celery'):
     # - Try specified namespace first.
     namespace = namespace.upper()
     try:
-        return namespace, name.upper(), NAMESPACES[namespace][name.upper()]
+        return searchresult(
+            namespace, name.upper(), NAMESPACES[namespace][name.upper()],
+        )
     except KeyError:
         # - Try all the other namespaces.
         for ns, keys in items(NAMESPACES):
             if ns.upper() == name.upper():
-                return None, ns, keys
+                return searchresult(None, ns, keys)
             elif isinstance(keys, dict):
                 try:
-                    return ns, name.upper(), keys[name.upper()]
+                    return searchresult(ns, name.upper(), keys[name.upper()])
                 except KeyError:
                     pass
     # - See if name is a qualname last.
-    return None, name.upper(), DEFAULTS[name.upper()]
+    return searchresult(None, name.upper(), DEFAULTS[name.upper()])

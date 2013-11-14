@@ -13,10 +13,11 @@ from datetime import timedelta
 from weakref import WeakValueDictionary
 
 from kombu import Connection, Consumer, Exchange, Producer, Queue
-from kombu.common import entry_to_queue
+from kombu.common import Broadcast
 from kombu.pools import ProducerPool
 from kombu.utils import cached_property
 from kombu.utils.encoding import safe_repr
+from kombu.utils.functional import maybe_list
 
 from celery import signals
 from celery.five import items, string_t
@@ -115,7 +116,7 @@ class Queues(dict):
             options['routing_key'] = name
         if self.ha_policy is not None:
             self._set_ha_policy(options.setdefault('queue_arguments', {}))
-        q = self[name] = entry_to_queue(name, **options)
+        q = self[name] = Queue.from_dict(name, **options)
         return q
 
     def _set_ha_policy(self, args):
@@ -144,20 +145,34 @@ class Queues(dict):
             self._consume_from[q.name] = q
         return q
 
-    def select_subset(self, wanted):
+    def select(self, include):
         """Sets :attr:`consume_from` by selecting a subset of the
         currently defined queues.
 
-        :param wanted: List of wanted queue names.
+        :param include: Names of queues to consume from.
+                        Can be iterable or string.
         """
-        if wanted:
-            self._consume_from = dict((name, self[name]) for name in wanted)
+        if include:
+            self._consume_from = dict((name, self[name])
+                                      for name in maybe_list(include))
+    select_subset = select  # XXX compat
 
-    def select_remove(self, queue):
-        if self._consume_from is None:
-            self.select_subset(k for k in self if k != queue)
-        else:
-            self._consume_from.pop(queue, None)
+    def deselect(self, exclude):
+        """Deselect queues so that they will not be consumed from.
+
+        :param exclude: Names of queues to avoid consuming from.
+                        Can be iterable or string.
+
+        """
+        if exclude:
+            exclude = maybe_list(exclude)
+            if self._consume_from is None:
+                # using selection
+                return self.select(k for k in self if k not in exclude)
+            # using all queues
+            for queue in exclude:
+                self._consume_from.pop(queue, None)
+    select_remove = deselect  # XXX compat
 
     def new_missing(self, name):
         return Queue(name, self.autoexchange(name), name)
@@ -229,7 +244,7 @@ class AMQP(object):
         )
 
     def Router(self, queues=None, create_missing=None):
-        """Returns the current task router."""
+        """Return the current task router."""
         return _routes.Router(self.routes, queues or self.queues,
                               self.app.either('CELERY_CREATE_MISSING_QUEUES',
                                               create_missing), app=self.app)

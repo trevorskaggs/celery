@@ -4,6 +4,13 @@
  Using CouchDB
 ===============
 
+.. admonition:: Experimental Status
+
+    The CouchDB transport is in need of improvements in many areas and there
+    are several open bugs.  Sadly we don't have the resources or funds
+    required to improve the situation, so we're looking for contributors
+    and partners willing to help.
+
 .. _broker-couchdb-installation:
 
 Installation
@@ -11,16 +18,11 @@ Installation
 
 For the CouchDB support you have to install additional dependencies.
 You can install both Celery and these dependencies in one go using
-either the `celery-with-couchdb`_, or the `django-celery-with-couchdb` bundles:
+the ``celery[couchdb]`` :ref:`bundle <bundles>`:
 
 .. code-block:: bash
 
-    $ pip install -U celery-with-couchdb
-
-.. _`celery-with-couchdb`:
-    http://pypi.python.org/pypi/celery-with-couchdb
-.. _`django-celery-with-couchdb`:
-    http://pypi.python.org/pypi/django-celery-with-couchdb
+    $ pip install -U celery[couchdb]
 
 .. _broker-couchdb-configuration:
 

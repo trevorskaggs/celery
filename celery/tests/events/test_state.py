@@ -5,7 +5,6 @@ import pickle
 from random import shuffle
 from time import time
 from itertools import count
-from mock import patch
 
 from celery import states
 from celery.events import Event
@@ -18,7 +17,7 @@ from celery.events.state import (
 )
 from celery.five import range
 from celery.utils import uuid
-from celery.tests.case import AppCase
+from celery.tests.case import AppCase, patch
 
 
 class replay(object):
@@ -287,9 +286,7 @@ class test_State(AppCase):
             tA, tB, tC = r.uids
             r.rewind_with_offset(r.current_clock + 1, r.uids)
             r.play()
-        print('tA={0} tb={1}, tC={2}'.format(*r.uids))
         now = list(state.tasks_by_time())
-        print(now)
         self.assertEqual(now[0][0], tA)
         self.assertEqual(now[1][0], tC)
         self.assertEqual(now[2][0], tB)

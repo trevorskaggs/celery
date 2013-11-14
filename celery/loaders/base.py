@@ -9,7 +9,7 @@
 from __future__ import absolute_import
 
 import anyjson
-import imp
+import imp as _imp
 import importlib
 import os
 import re
@@ -20,7 +20,7 @@ from datetime import datetime
 from kombu.utils import cached_property
 from kombu.utils.encoding import safe_str
 
-from celery.datastructures import DictAttribute
+from celery.datastructures import DictAttribute, force_mapping
 from celery.five import reraise, string_t
 from celery.utils.functional import maybe_list
 from celery.utils.imports import (
@@ -135,18 +135,28 @@ class BaseLoader(object):
     def config_from_object(self, obj, silent=False):
         if isinstance(obj, string_t):
             try:
-                if '.' in obj:
-                    obj = symbol_by_name(obj, imp=self.import_from_cwd)
-                else:
-                    obj = self.import_from_cwd(obj)
+                obj = self._smart_import(obj, imp=self.import_from_cwd)
             except (ImportError, AttributeError):
                 if silent:
                     return False
                 raise
-        if not hasattr(obj, '__getitem__'):
-            obj = DictAttribute(obj)
-        self._conf = obj
+        self._conf = force_mapping(obj)
         return True
+
+    def _smart_import(self, path, imp=None):
+        imp = self.import_module if imp is None else imp
+        if ':' in path:
+            # Path includes attribute so can just jump here.
+            # e.g. ``os.path:abspath``.
+            return symbol_by_name(path, imp=imp)
+
+        # Not sure if path is just a module name or if it includes an
+        # attribute name (e.g. ``os.path``, vs, ``os.path.abspath``
+        try:
+            return imp(path)
+        except ImportError:
+            # Not a module name, so try module + attribute.
+            return symbol_by_name(path, imp=imp)
 
     def _import_config_module(self, name):
         try:
@@ -272,7 +282,7 @@ def find_related_module(package, related_name):
         return
 
     try:
-        imp.find_module(related_name, pkg_path)
+        _imp.find_module(related_name, pkg_path)
     except ImportError:
         return
 

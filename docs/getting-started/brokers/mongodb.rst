@@ -4,6 +4,13 @@
  Using MongoDB
 ===============
 
+.. admonition:: Experimental Status
+
+    The SQS transport is in need of improvements in many areas and there
+    are several open bugs.  Sadly we don't have the resources or funds
+    required to improve the situation, so we're looking for contributors
+    and partners willing to help.
+
 .. _broker-mongodb-installation:
 
 Installation
@@ -11,16 +18,11 @@ Installation
 
 For the MongoDB support you have to install additional dependencies.
 You can install both Celery and these dependencies in one go using
-either the `celery-with-mongodb`_, or the `django-celery-with-mongodb` bundles:
+the ``celery[mongodb]`` :ref:`bundle <bundles>`:
 
 .. code-block:: bash
 
-    $ pip install -U celery-with-mongodb
-
-.. _`celery-with-mongodb`:
-    http://pypi.python.org/pypi/celery-with-mongodb
-.. _`django-celery-with-mongodb`:
-    http://pypi.python.org/pypi/django-celery-with-mongodb
+    $ pip install -U celery[mongodb]
 
 .. _broker-mongodb-configuration:
 

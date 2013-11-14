@@ -23,7 +23,7 @@ This directory contains generic bash init scripts for the
 these should run on Linux, FreeBSD, OpenBSD, and other Unix-like platforms.
 
 .. _`extra/generic-init.d/`:
-    http://github.com/celery/celery/tree/3.0/extra/generic-init.d/
+    http://github.com/celery/celery/tree/3.1/extra/generic-init.d/
 
 .. _generic-initd-celeryd:
 
@@ -33,9 +33,15 @@ Init script: celeryd
 :Usage: `/etc/init.d/celeryd {start|stop|restart|status}`
 :Configuration file: /etc/default/celeryd
 
-To configure this script to run the worker properly you probably need to at least tell it where to change
+To configure this script to run the worker properly you probably need to at least
+tell it where to change
 directory to when it starts (to find the module containing your app, or your
 configuration module).
+
+The daemonization script is configured by the file ``/etc/default/celeryd``,
+which is a shell (sh) script.  You can add environment variables and the
+configuration options below to this file.  To add environment variables you
+must also export them (e.g. ``export DISPLAY=":0"``)
 
 .. _generic-initd-celeryd-example:
 
@@ -84,7 +90,6 @@ This is an example configuration for a Python project.
     # If enabled pid and log directories will be created if missing,
     # and owned by the userid/group configured.
     CELERY_CREATE_DIRS=1
-
 
 .. _generic-initd-celeryd-django-example:
 
@@ -246,6 +251,86 @@ Available options
 * CELERY_CREATE_LOGDIR
     Always create logfile directory.  By default only enable when no custom
     logfile location set.
+    
+.. _daemon-systemd-generic:
+
+Usage systemd
+=============
+
+.. _generic-systemd-celery:
+
+Service file: celery.service
+----------------------------
+
+:Usage: `systemctl {start|stop|restart|status} celery.service`
+:Configuration file: /etc/conf.d/celery
+
+To create a temporary folders for the log and pid files change user and group in 
+/usr/lib/tmpfiles.d/celery.conf.
+To configure user, group, chdir change settings User, Group and WorkingDirectory defines 
+in /usr/lib/systemd/system/celery.service. 
+
+.. _generic-systemd-celery-example:
+
+Example configuration
+~~~~~~~~~~~~~~~~~~~~~
+
+This is an example configuration for a Python project:
+
+:file:`/etc/conf.d/celery`:
+
+.. code-block:: bash
+
+    # Name of nodes to start
+    # here we have a single node
+    CELERYD_NODES="w1"
+    # or we could have three nodes:
+    #CELERYD_NODES="w1 w2 w3"
+
+    # Absolute or relative path to the 'celery' command:
+    CELERY_BIN="/usr/local/bin/celery"
+    #CELERY_BIN="/virtualenvs/def/bin/celery"
+
+    # How to call manage.py
+    CELERYD_MULTI="multi"
+
+    # Extra command-line arguments to the worker
+    CELERYD_OPTS="--time-limit=300 --concurrency=8"
+
+    # %N will be replaced with the first part of the nodename.
+    CELERYD_LOG_FILE="/var/log/celery/%N.log"
+    CELERYD_PID_FILE="/var/run/celery/%N.pid"
+
+.. _generic-systemd-celeryd-django-example:
+
+Example Django configuration
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+This is an example configuration for those using `django-celery`:
+
+.. code-block:: bash
+
+    # Name of nodes to start
+    # here we have a single node
+    CELERYD_NODES="w1"
+    # or we could have three nodes:
+    #CELERYD_NODES="w1 w2 w3"
+
+    # Absolute path to "manage.py"
+    CELERY_BIN="/opt/Myproject/manage.py"
+
+    # How to call manage.py
+    CELERYD_MULTI="celery multi"
+
+    # Extra command-line arguments to the worker
+    CELERYD_OPTS="--time-limit=300 --concurrency=8"
+
+    # %N will be replaced with the first part of the nodename.
+    CELERYD_LOG_FILE="/var/log/celery/%N.log"
+    CELERYD_PID_FILE="/var/run/celery/%N.pid"
+
+To add an environment variable such as DJANGO_SETTINGS_MODULE use the
+Environment in celery.service.
 
 .. _generic-initd-troubleshooting:
 
@@ -253,31 +338,33 @@ Troubleshooting
 ---------------
 
 If you can't get the init scripts to work, you should try running
-them in *verbose mode*::
+them in *verbose mode*:
 
-    $ sh -x /etc/init.d/celeryd start
+.. code-block:: bash
+
+    # sh -x /etc/init.d/celeryd start
 
 This can reveal hints as to why the service won't start.
 
-Also you will see the commands generated, so you can try to run the celeryd
-command manually to read the resulting error output.
-
-For example my `sh -x` output does this:
-
-.. code-block:: bash
-
-    ++ start-stop-daemon --start --chdir /opt/App/release/app --quiet \
-        --oknodo --background --make-pidfile --pidfile /var/run/celeryd.pid \
-        --exec /opt/App/release/app/manage.py celery worker -- --time-limit=300 \
-        -f /var/log/celeryd.log -l INFO
-
-Run the worker command after `--exec` (without the `--`) to show the
-actual resulting output:
+If the worker starts with "OK" but exits almost immediately afterwards
+and there is nothing in the log file, then there is probably an error
+but as the daemons standard outputs are already closed you'll
+not be able to see them anywhere.  For this situation you can use
+the :envvar:`C_FAKEFORK` environment variable to skip the
+daemonization step:
 
 .. code-block:: bash
 
-    $ /opt/App/release/app/manage.py celery worker --time-limit=300 \
-        -f /var/log/celeryd.log -l INFO
+    C_FAKEFORK=1 sh -x /etc/init.d/celeryd start
+
+
+and now you should be able to see the errors.
+
+Commonly such errors are caused by insufficient permissions
+to read from, or write to a file, and also by syntax errors
+in configuration modules, user modules, 3rd party libraries,
+or even from Celery itself (if you've found a bug, in which case
+you should :ref:`report it <reporting-bugs>`).
 
 .. _daemon-supervisord:
 
@@ -287,7 +374,7 @@ actual resulting output:
 * `extra/supervisord/`_
 
 .. _`extra/supervisord/`:
-    http://github.com/celery/celery/tree/3.0/extra/supervisord/
+    http://github.com/celery/celery/tree/3.1/extra/supervisord/
 .. _`supervisord`: http://supervisord.org/
 
 .. _daemon-launchd:
@@ -295,10 +382,10 @@ actual resulting output:
 launchd (OS X)
 ==============
 
-* `extra/mac/`_
+* `extra/osx`_
 
-.. _`extra/mac/`:
-    http://github.com/celery/celery/tree/3.0/extra/mac/
+.. _`extra/osx`:
+    http://github.com/celery/celery/tree/3.1/extra/osx/
 
 
 .. _daemon-windows:
@@ -314,4 +401,4 @@ CentOS
 ======
 In CentOS we can take advantage of built-in service helpers, such as the
 pid-based status checker function in ``/etc/init.d/functions``.
-See the sample script in http://github.com/celery/celery/tree/3.0/extra/centos/.
+See the sample script in http://github.com/celery/celery/tree/3.1/extra/centos/.

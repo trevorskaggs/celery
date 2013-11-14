@@ -11,6 +11,7 @@ from __future__ import absolute_import
 
 import re
 
+from collections import namedtuple
 from datetime import datetime, timedelta
 
 from kombu.utils import cached_property
@@ -26,6 +27,8 @@ from .datastructures import AttributeDict
 
 __all__ = ['ParseException', 'schedule', 'crontab', 'crontab_parser',
            'maybe_schedule']
+
+schedstate = namedtuple('schedstate', ('is_due', 'next'))
 
 
 CRON_PATTERN_INVALID = """\
@@ -53,6 +56,16 @@ class ParseException(Exception):
 
 
 class schedule(object):
+    """Schedule for periodic task.
+
+    :param run_every: Interval in seconds (or a :class:`~datetime.timedelta`).
+    :param relative:  If set to True the run time will be rounded to the
+        resolution of the interval.
+    :param nowfun: Function returning the current date and time
+        (class:`~datetime.datetime`).
+    :param app: Celery app instance.
+
+    """
     relative = False
 
     def __init__(self, run_every=None, relative=False, nowfun=None, app=None):
@@ -65,8 +78,10 @@ class schedule(object):
         return (self.nowfun or self.app.now)()
 
     def remaining_estimate(self, last_run_at):
-        return remaining(last_run_at, self.run_every,
-                         self.maybe_make_aware(self.now()), self.relative)
+        return remaining(
+            self.maybe_make_aware(last_run_at), self.run_every,
+            self.maybe_make_aware(self.now()), self.relative,
+        )
 
     def is_due(self, last_run_at):
         """Returns tuple of two items `(is_due, next_time_to_run)`,
@@ -98,10 +113,10 @@ class schedule(object):
         """
         last_run_at = self.maybe_make_aware(last_run_at)
         rem_delta = self.remaining_estimate(last_run_at)
-        rem = timedelta_seconds(rem_delta)
-        if rem == 0:
-            return True, self.seconds
-        return False, rem
+        remaining_s = timedelta_seconds(rem_delta)
+        if remaining_s == 0:
+            return schedstate(is_due=True, next=self.seconds)
+        return schedstate(is_due=False, next=remaining_s)
 
     def maybe_make_aware(self, dt):
         if self.utc_enabled:
@@ -118,6 +133,9 @@ class schedule(object):
 
     def __ne__(self, other):
         return not self.__eq__(other)
+
+    def __reduce__(self):
+        return self.__class__, (self.run_every, self.relative, self.nowfun)
 
     @property
     def seconds(self):
@@ -137,7 +155,7 @@ class schedule(object):
 
     @cached_property
     def tz(self):
-        return timezone.get_timezone(self.app.conf.CELERY_TIMEZONE)
+        return self.app.timezone
 
     @cached_property
     def utc_enabled(self):
@@ -145,7 +163,7 @@ class schedule(object):
 
     def to_local(self, dt):
         if not self.utc_enabled:
-            return timezone.to_local_fallback(dt, self.tz)
+            return timezone.to_local_fallback(dt)
         return dt
 
 
@@ -321,6 +339,15 @@ class crontab(schedule):
           advanced, such as `month_of_year='*/3'` (for the first month
           of every quarter) or `month_of_year='2-12/2'` (for every even
           numbered month).
+
+    .. attribute:: nowfun
+
+        Function returning the current date and time
+        (:class:`~datetime.datetime`).
+
+    .. attribute:: app
+
+        The Celery app instance.
 
     It is important to realize that any day on which execution should
     occur must be represented by entries in all three of the day and
@@ -537,7 +564,7 @@ class crontab(schedule):
         if due:
             rem_delta = self.remaining_estimate(self.now())
             rem = timedelta_seconds(rem_delta)
-        return due, rem
+        return schedstate(due, rem)
 
     def __eq__(self, other):
         if isinstance(other, crontab):
@@ -553,8 +580,11 @@ class crontab(schedule):
 
 
 def maybe_schedule(s, relative=False, app=None):
-    if isinstance(s, int):
-        s = timedelta(seconds=s)
-    if isinstance(s, timedelta):
-        return schedule(s, relative, app=app)
+    if s is not None:
+        if isinstance(s, int):
+            s = timedelta(seconds=s)
+        if isinstance(s, timedelta):
+            return schedule(s, relative, app=app)
+        else:
+            s.app = app
     return s

@@ -195,7 +195,7 @@ class Batches(Task):
         put_buffer = self._buffer.put
         flush_buffer = self._do_flush
 
-        def task_message_handler(message, body, ack):
+        def task_message_handler(message, body, ack, reject, callbacks, **kw):
             request = Req(body, on_ack=ack, app=app, hostname=hostname,
                           events=eventer, task=task,
                           connection_errors=connection_errors,
@@ -203,8 +203,9 @@ class Batches(Task):
             put_buffer(request)
 
             if self._tref is None:     # first request starts flush timer.
-                self._tref = timer.apply_interval(self.flush_interval * 1000.0,
-                                                  flush_buffer)
+                self._tref = timer.call_repeatedly(
+                    self.flush_interval, flush_buffer,
+                )
 
             if not next(self._count) % self.flush_every:
                 flush_buffer()

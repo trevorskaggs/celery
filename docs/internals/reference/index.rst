@@ -17,12 +17,11 @@
     celery.worker.autoscale
     celery.concurrency
     celery.concurrency.solo
-    celery.concurrency.processes
+    celery.concurrency.prefork
     celery.concurrency.eventlet
     celery.concurrency.gevent
     celery.concurrency.base
     celery.concurrency.threads
-    celery.beat
     celery.backends
     celery.backends.base
     celery.backends.rpc

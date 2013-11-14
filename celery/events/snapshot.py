@@ -16,7 +16,7 @@ from kombu.utils.limits import TokenBucket
 
 from celery import platforms
 from celery.app import app_or_default
-from celery.utils import timer2
+from celery.utils.timer2 import Timer
 from celery.utils.dispatch import Signal
 from celery.utils.imports import instantiate
 from celery.utils.log import get_logger
@@ -28,7 +28,7 @@ logger = get_logger('celery.evcam')
 
 
 class Polaroid(object):
-    timer = timer2
+    timer = None
     shutter_signal = Signal(providing_args=('state', ))
     cleanup_signal = Signal()
     clear_after = False
@@ -42,15 +42,15 @@ class Polaroid(object):
         self.state = state
         self.freq = freq
         self.cleanup_freq = cleanup_freq
-        self.timer = timer or self.timer
+        self.timer = timer or self.timer or Timer()
         self.logger = logger
         self.maxrate = maxrate and TokenBucket(rate(maxrate))
 
     def install(self):
-        self._tref = self.timer.apply_interval(self.freq * 1000.0,
-                                               self.capture)
-        self._ctref = self.timer.apply_interval(self.cleanup_freq * 1000.0,
-                                                self.cleanup)
+        self._tref = self.timer.call_repeatedly(self.freq, self.capture)
+        self._ctref = self.timer.call_repeatedly(
+            self.cleanup_freq, self.cleanup,
+        )
 
     def on_shutter(self, state):
         pass

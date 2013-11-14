@@ -8,13 +8,12 @@
 """
 from __future__ import absolute_import
 
-import os
 import sys
+
+from time import time
 
 __all__ = ['TaskPool']
 
-EVENTLET_NOPATCH = os.environ.get('EVENTLET_NOPATCH', False)
-EVENTLET_DBLOCK = int(os.environ.get('EVENTLET_NOBLOCK', 0))
 W_RACE = """\
 Celery module with %s imported before eventlet patched\
 """
@@ -29,17 +28,6 @@ for mod in (mod for mod in sys.modules if mod.startswith(RACE_MODS)):
             import warnings
             warnings.warn(RuntimeWarning(W_RACE % side))
 
-
-PATCHED = [0]
-if not EVENTLET_NOPATCH and not PATCHED[0]:  # pragma: no cover
-    PATCHED[0] += 1
-    import eventlet
-    import eventlet.debug
-    eventlet.monkey_patch()
-    if EVENTLET_DBLOCK:
-        eventlet.debug.hub_blocking_detection(EVENTLET_DBLOCK)
-
-from time import time
 
 from celery import signals
 from celery.utils import timer2
@@ -95,7 +83,7 @@ class Schedule(timer2.Schedule):
 
     @property
     def queue(self):
-        return [(g.eta, g.priority, g.entry) for g in self._queue]
+        return self._queue
 
 
 class Timer(timer2.Timer):
@@ -122,6 +110,7 @@ class TaskPool(base.BasePool):
 
     signal_safe = False
     is_green = True
+    task_join_will_block = False
 
     def __init__(self, *args, **kwargs):
         from eventlet import greenthread

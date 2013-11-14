@@ -8,26 +8,12 @@
 """
 from __future__ import absolute_import
 
-import os
-
-PATCHED = [0]
-if not os.environ.get('GEVENT_NOPATCH') and not PATCHED[0]:
-    PATCHED[0] += 1
-    from gevent import monkey, version_info
-    monkey.patch_all()
-    if version_info[0] == 0:  # pragma: no cover
-        # Signals aren't working in gevent versions <1.0,
-        # and are not monkey patched by patch_all()
-        from gevent import signal as _gevent_signal
-        _signal = __import__('signal')
-        _signal.signal = _gevent_signal
+from time import time
 
 try:
     from gevent import Timeout
 except ImportError:  # pragma: no cover
     Timeout = None  # noqa
-
-from time import time
 
 from celery.utils import timer2
 
@@ -43,7 +29,8 @@ def apply_timeout(target, args=(), kwargs={}, callback=None,
     try:
         with Timeout(timeout):
             return apply_target(target, args, kwargs, callback,
-                                accept_callback, pid, **rest)
+                                accept_callback, pid,
+                                propagate=(Timeout, ), **rest)
     except Timeout:
         return timeout_callback(False, timeout)
 
@@ -88,7 +75,7 @@ class Schedule(timer2.Schedule):
 
     @property
     def queue(self):
-        return [(g.eta, g.priority, g.entry) for g in self._queue]
+        return self._queue
 
 
 class Timer(timer2.Timer):
@@ -109,6 +96,7 @@ class TaskPool(BasePool):
 
     signal_safe = False
     is_green = True
+    task_join_will_block = False
 
     def __init__(self, *args, **kwargs):
         from gevent import spawn_raw

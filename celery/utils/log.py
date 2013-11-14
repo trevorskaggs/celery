@@ -16,11 +16,12 @@ import traceback
 
 from contextlib import contextmanager
 from billiard import current_process, util as mputil
+from kombu.five import values
 from kombu.log import get_logger as _get_logger, LOG_LEVELS
+from kombu.utils.encoding import safe_str
 
-from celery.five import string_t
+from celery.five import string_t, text_t
 
-from .encoding import safe_str, str_t
 from .term import colored
 
 __all__ = ['ColorFormatter', 'LoggingProxy', 'base_logger',
@@ -50,6 +51,23 @@ def set_in_sighandler(value):
     _in_sighandler = value
 
 
+def iter_open_logger_fds():
+    seen = set()
+    loggers = (list(values(logging.Logger.manager.loggerDict)) +
+               [logging.getLogger(None)])
+    for logger in loggers:
+        try:
+            for handler in logger.handlers:
+                try:
+                    if handler not in seen:
+                        yield handler.stream
+                        seen.add(handler)
+                except AttributeError:
+                    pass
+        except AttributeError:  # PlaceHolder does not have handlers
+            pass
+
+
 @contextmanager
 def in_sighandler():
     set_in_sighandler(True)
@@ -59,10 +77,26 @@ def in_sighandler():
         set_in_sighandler(False)
 
 
+def logger_isa(l, p):
+    this, seen = l, set()
+    while this:
+        if this == p:
+            return True
+        else:
+            if this in seen:
+                raise RuntimeError(
+                    'Logger {0!r} parents recursive'.format(l),
+                )
+            seen.add(this)
+            this = this.parent
+    return False
+
+
 def get_logger(name):
     l = _get_logger(name)
     if logging.root not in (l, l.parent) and l is not base_logger:
-        l.parent = base_logger
+        if not logger_isa(l, base_logger):
+            l.parent = base_logger
     return l
 task_logger = get_logger('celery.task')
 worker_logger = get_logger('celery.worker')
@@ -70,7 +104,7 @@ worker_logger = get_logger('celery.worker')
 
 def get_task_logger(name):
     logger = get_logger(name)
-    if logger.parent is logging.root:
+    if not logger_isa(logger, task_logger):
         logger.parent = task_logger
     return logger
 
@@ -100,6 +134,7 @@ class ColorFormatter(logging.Formatter):
         return r
 
     def format(self, record):
+        sformat = logging.Formatter.format
         color = self.colors.get(record.levelname)
 
         if color and self.use_color:
@@ -109,16 +144,20 @@ class ColorFormatter(logging.Formatter):
                 # and color will break on non-string objects
                 # so need to reorder calls based on type.
                 # Issue #427
-                if isinstance(msg, string_t):
-                    record.msg = str_t(color(safe_str(msg)))
-                else:
-                    record.msg = safe_str(color(msg))
+                try:
+                    if isinstance(msg, string_t):
+                        record.msg = text_t(color(safe_str(msg)))
+                    else:
+                        record.msg = safe_str(color(msg))
+                except UnicodeDecodeError:
+                    record.msg = safe_str(msg)  # skip colors
             except Exception as exc:
                 record.msg = '<Unrepresentable {0!r}: {1!r}>'.format(
                     type(msg), exc)
                 record.exc_info = True
-
-        return safe_str(logging.Formatter.format(self, record))
+            return sformat(self, record)
+        else:
+            return safe_str(sformat(self, record))
 
 
 class LoggingProxy(object):
@@ -202,7 +241,7 @@ class LoggingProxy(object):
         self.closed = True
 
     def isatty(self):
-        """Always returns :const:`False`. Just here for file support."""
+        """Always return :const:`False`. Just here for file support."""
         return False
 
 

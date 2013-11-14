@@ -20,7 +20,7 @@ from datetime import timedelta
 
 from billiard.einfo import ExceptionInfo
 from kombu.serialization import (
-    encode, decode, prepare_accept_content,
+    dumps, loads, prepare_accept_content,
     registry as serializer_registry,
 )
 from kombu.utils.encoding import bytes_to_str, ensure_bytes, from_utf8
@@ -29,7 +29,7 @@ from celery import states
 from celery.app import current_task
 from celery.exceptions import ChordError, TimeoutError, TaskRevokedError
 from celery.five import items
-from celery.result import from_serializable, GroupResult
+from celery.result import result_from_tuple, GroupResult
 from celery.utils import timeutils
 from celery.utils.functional import LRUCache
 from celery.utils.serialization import (
@@ -45,7 +45,7 @@ PY3 = sys.version_info >= (3, 0)
 
 
 def unpickle_backend(cls, args, kwargs):
-    """Returns an unpickled backend."""
+    """Return an unpickled backend."""
     from celery import current_app
     return cls(*args, app=current_app._get_current_object(), **kwargs)
 
@@ -70,6 +70,9 @@ class BaseBackend(object):
     #: in this case.
     supports_autoexpire = False
 
+    #: Set to true if the backend is peristent by default.
+    persistent = True
+
     def __init__(self, app, serializer=None,
                  max_cached_results=None, accept=None, **kwargs):
         self.app = app
@@ -89,14 +92,15 @@ class BaseBackend(object):
         """Mark a task as started"""
         return self.store_result(task_id, meta, status=states.STARTED)
 
-    def mark_as_done(self, task_id, result):
+    def mark_as_done(self, task_id, result, request=None):
         """Mark task as successfully executed."""
-        return self.store_result(task_id, result, status=states.SUCCESS)
+        return self.store_result(task_id, result,
+                                 status=states.SUCCESS, request=request)
 
-    def mark_as_failure(self, task_id, exc, traceback=None):
+    def mark_as_failure(self, task_id, exc, traceback=None, request=None):
         """Mark task as executed with failure. Stores the execption."""
         return self.store_result(task_id, exc, status=states.FAILURE,
-                                 traceback=traceback)
+                                 traceback=traceback, request=request)
 
     def fail_from_current_stack(self, task_id, exc=None):
         type_, real_exc, tb = sys.exc_info()
@@ -108,15 +112,16 @@ class BaseBackend(object):
         finally:
             del(tb)
 
-    def mark_as_retry(self, task_id, exc, traceback=None):
+    def mark_as_retry(self, task_id, exc, traceback=None, request=None):
         """Mark task as being retries. Stores the current
         exception (if any)."""
         return self.store_result(task_id, exc, status=states.RETRY,
-                                 traceback=traceback)
+                                 traceback=traceback, request=request)
 
-    def mark_as_revoked(self, task_id, reason=''):
+    def mark_as_revoked(self, task_id, reason='', request=None):
         return self.store_result(task_id, TaskRevokedError(reason),
-                                 status=states.REVOKED, traceback=None)
+                                 status=states.REVOKED, traceback=None,
+                                 request=request)
 
     def prepare_exception(self, exc):
         """Prepare exception for serialization."""
@@ -128,25 +133,25 @@ class BaseBackend(object):
         """Convert serialized exception to Python exception."""
         if self.serializer in EXCEPTION_ABLE_CODECS:
             return get_pickled_exception(exc)
-        return create_exception_cls(from_utf8(exc['exc_type']),
-                                    sys.modules[__name__])(exc['exc_message'])
+        return create_exception_cls(
+            from_utf8(exc['exc_type']), __name__)(exc['exc_message'])
 
     def prepare_value(self, result):
         """Prepare value for storage."""
         if isinstance(result, GroupResult):
-            return result.serializable()
+            return result.as_tuple()
         return result
 
     def encode(self, data):
-        _, _, payload = encode(data, serializer=self.serializer)
+        _, _, payload = dumps(data, serializer=self.serializer)
         return payload
 
     def decode(self, payload):
         payload = PY3 and payload or str(payload)
-        return decode(payload,
-                      content_type=self.content_type,
-                      content_encoding=self.content_encoding,
-                      accept=self.accept)
+        return loads(payload,
+                     content_type=self.content_type,
+                     content_encoding=self.content_encoding,
+                     accept=self.accept)
 
     def wait_for(self, task_id, timeout=None, propagate=True, interval=0.5):
         """Wait for task and return its result.
@@ -186,6 +191,12 @@ class BaseBackend(object):
             return type(value)
         return value
 
+    def prepare_persistent(self, enabled=None):
+        if enabled is not None:
+            return enabled
+        p = self.app.conf.CELERY_RESULT_PERSISTENT
+        return self.persistent if p is None else p
+
     def encode_result(self, result, status):
         if status in self.EXCEPTION_STATES and isinstance(result, Exception):
             return self.prepare_exception(result)
@@ -195,10 +206,12 @@ class BaseBackend(object):
     def is_cached(self, task_id):
         return task_id in self._cache
 
-    def store_result(self, task_id, result, status, traceback=None, **kwargs):
+    def store_result(self, task_id, result, status,
+                     traceback=None, request=None, **kwargs):
         """Update task state and result."""
         result = self.encode_result(result, status)
-        self._store_result(task_id, result, status, traceback, **kwargs)
+        self._store_result(task_id, result, status, traceback,
+                           request=request, **kwargs)
         return result
 
     def forget(self, task_id):
@@ -294,16 +307,16 @@ class BaseBackend(object):
 
     def fallback_chord_unlock(self, group_id, body, result=None,
                               countdown=1, **kwargs):
-        kwargs['result'] = [r.serializable() for r in result]
+        kwargs['result'] = [r.as_tuple() for r in result]
         self.app.tasks['celery.chord_unlock'].apply_async(
             (group_id, body, ), kwargs, countdown=countdown,
         )
     on_chord_apply = fallback_chord_unlock
 
-    def current_task_children(self):
-        current = current_task()
-        if current:
-            return [r.serializable() for r in current.request.children]
+    def current_task_children(self, request=None):
+        request = request or getattr(current_task(), 'request', None)
+        if request:
+            return [r.as_tuple() for r in getattr(request, 'children', [])]
 
     def __reduce__(self, args=(), kwargs={}):
         return (unpickle_backend, (self.__class__, args, kwargs))
@@ -366,16 +379,19 @@ class KeyValueStoreBackend(BaseBackend):
                         for i, value in enumerate(values)
                         if value is not None)
 
-    def get_many(self, task_ids, timeout=None, interval=0.5):
-        ids = set(task_ids)
+    def get_many(self, task_ids, timeout=None, interval=0.5,
+                 READY_STATES=states.READY_STATES):
+        interval = 0.5 if interval is None else interval
+        ids = task_ids if isinstance(task_ids, set) else set(task_ids)
         cached_ids = set()
+        cache = self._cache
         for task_id in ids:
             try:
-                cached = self._cache[task_id]
+                cached = cache[task_id]
             except KeyError:
                 pass
             else:
-                if cached['status'] in states.READY_STATES:
+                if cached['status'] in READY_STATES:
                     yield bytes_to_str(task_id), cached
                     cached_ids.add(task_id)
 
@@ -385,7 +401,7 @@ class KeyValueStoreBackend(BaseBackend):
             keys = list(ids)
             r = self._mget_to_results(self.mget([self.get_key_for_task(k)
                                                  for k in keys]), keys)
-            self._cache.update(r)
+            cache.update(r)
             ids.difference_update(set(bytes_to_str(v) for v in r))
             for key, value in items(r):
                 yield bytes_to_str(key), value
@@ -397,15 +413,16 @@ class KeyValueStoreBackend(BaseBackend):
     def _forget(self, task_id):
         self.delete(self.get_key_for_task(task_id))
 
-    def _store_result(self, task_id, result, status, traceback=None):
+    def _store_result(self, task_id, result, status,
+                      traceback=None, request=None, **kwargs):
         meta = {'status': status, 'result': result, 'traceback': traceback,
-                'children': self.current_task_children()}
+                'children': self.current_task_children(request)}
         self.set(self.get_key_for_task(task_id), self.encode(meta))
         return result
 
     def _save_group(self, group_id, result):
         self.set(self.get_key_for_group(group_id),
-                 self.encode({'result': result.serializable()}))
+                 self.encode({'result': result.as_tuple()}))
         return result
 
     def _delete_group(self, group_id):
@@ -427,7 +444,7 @@ class KeyValueStoreBackend(BaseBackend):
         if meta:
             meta = self.decode(meta)
             result = meta['result']
-            meta['result'] = from_serializable(result, self.app)
+            meta['result'] = result_from_tuple(result, self.app)
             return meta
 
     def on_chord_apply(self, group_id, body, result=None, **kwargs):
@@ -439,7 +456,7 @@ class KeyValueStoreBackend(BaseBackend):
     def on_chord_part_return(self, task, propagate=None):
         if not self.implements_incr:
             return
-        from celery import subtask
+        from celery import maybe_signature
         from celery.result import GroupResult
         app = self.app
         if propagate is None:
@@ -448,11 +465,30 @@ class KeyValueStoreBackend(BaseBackend):
         if not gid:
             return
         key = self.get_key_for_chord(gid)
-        deps = GroupResult.restore(gid, backend=task.backend)
+        try:
+            deps = GroupResult.restore(gid, backend=task.backend)
+        except Exception as exc:
+            callback = maybe_signature(task.request.chord, app=self.app)
+            return app._tasks[callback.task].backend.fail_from_current_stack(
+                callback.id,
+                exc=ChordError('Cannot restore group: {0!r}'.format(exc)),
+            )
+        if deps is None:
+            try:
+                raise ValueError(gid)
+            except ValueError as exc:
+                callback = maybe_signature(task.request.chord, app=self.app)
+                task = app._tasks[callback.task]
+                return task.backend.fail_from_current_stack(
+                    callback.id,
+                    exc=ChordError('GroupResult {0} no longer exists'.format(
+                        gid,
+                    ))
+                )
         val = self.incr(key)
         if val >= len(deps):
+            callback = maybe_signature(task.request.chord, app=self.app)
             j = deps.join_native if deps.supports_native_join else deps.join
-            callback = subtask(task.request.chord)
             try:
                 ret = j(propagate=propagate)
             except Exception as exc:

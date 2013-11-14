@@ -101,11 +101,14 @@ class Inspect(object):
     def active_queues(self):
         return self._request('active_queues')
 
-    def conf(self):
-        return self._request('dump_conf')
+    def query_task(self, ids):
+        return self._request('query_task', ids=ids)
 
-    def hello(self):
-        return self._request('hello')
+    def conf(self, with_defaults=False):
+        return self._request('dump_conf', with_defaults=with_defaults)
+
+    def hello(self, from_node, revoked=None):
+        return self._request('hello', from_node=from_node, revoked=revoked)
 
     def memsample(self):
         return self._request('memsample')
@@ -171,7 +174,7 @@ class Control(object):
     def ping(self, destination=None, timeout=1, **kwargs):
         """Ping all (or specific) workers.
 
-        Returns answer from alive workers.
+        Will return the list of answers.
 
         See :meth:`broadcast` for supported keyword arguments.
 

@@ -39,11 +39,11 @@ case "$words[1]" in
     worker)
     _arguments \
     '(-C --concurrency=)'{-C,--concurrency=}'[Number of child processes processing the queue. The default is the number of CPUs.]' \
-    '(--pool)--pool=:::(processes eventlet gevent threads solo)' \
+    '(--pool)--pool=:::(prefork eventlet gevent threads solo)' \
     '(--purge --discard)'{--discard,--purge}'[Purges all waiting tasks before the daemon is started.]' \
     '(-f --logfile=)'{-f,--logfile=}'[Path to log file. If no logfile is specified, stderr is used.]' \
     '(--loglevel=)--loglevel=:::(critical error warning info debug)' \
-    '(-N --hostname=)'{-N,--hostname=}'[Set custom hostname, e.g. "foo.example.com".]' \
+    '(-N --hostname=)'{-N,--hostname=}'[Set custom hostname, e.g. "foo@example.com".]' \
     '(-B --beat)'{-B,--beat}'[Also run the celerybeat periodic task scheduler.]' \
     '(-s --schedule=)'{-s,--schedule=}'[Path to the schedule database if running with the -B option. Defaults to celerybeat-schedule.]' \
     '(-S --statedb=)'{-S,--statedb=}'[Path to the state database.Default: None]' \

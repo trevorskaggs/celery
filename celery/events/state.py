@@ -20,6 +20,7 @@ from __future__ import absolute_import
 
 import threading
 
+from datetime import datetime
 from heapq import heappush, heappop
 from itertools import islice
 from time import time
@@ -44,7 +45,7 @@ HEARTBEAT_DRIFT_MAX = 16
 
 DRIFT_WARNING = """\
 Substantial drift from %s may mean clocks are out of sync.  Current drift is
-%s seconds (including message overhead).\
+%s seconds.  [orig: %s recv: %s]
 """
 
 logger = get_logger(__name__)
@@ -116,7 +117,9 @@ class Worker(AttributeDict):
             return
         drift = abs(int(received) - int(timestamp))
         if drift > HEARTBEAT_DRIFT_MAX:
-            warn(DRIFT_WARNING, self.hostname, drift)
+            warn(DRIFT_WARNING, self.hostname, drift,
+                 datetime.fromtimestamp(received),
+                 datetime.fromtimestamp(timestamp))
         heartbeats, hbmax = self.heartbeats, self.heartbeat_max
         if not heartbeats or (received and received > heartbeats[-1]):
             heappush(heartbeats, received)
@@ -320,7 +323,7 @@ class State(object):
     def get_or_create_worker(self, hostname, **kwargs):
         """Get or create worker by hostname.
 
-        Returns tuple of ``(worker, was_created)``.
+        Return tuple of ``(worker, was_created)``.
         """
         try:
             worker = self.workers[hostname]
@@ -412,7 +415,7 @@ class State(object):
     def tasks_by_type(self, name, limit=None):
         """Get all tasks by type.
 
-        Returns a list of ``(uuid, Task)`` tuples.
+        Return a list of ``(uuid, Task)`` tuples.
 
         """
         return islice(
@@ -432,11 +435,11 @@ class State(object):
         )
 
     def task_types(self):
-        """Returns a list of all seen task types."""
+        """Return a list of all seen task types."""
         return list(sorted(set(task.name for task in values(self.tasks))))
 
     def alive_workers(self):
-        """Returns a list of (seemingly) alive workers."""
+        """Return a list of (seemingly) alive workers."""
         return [w for w in values(self.workers) if w.alive]
 
     def __repr__(self):

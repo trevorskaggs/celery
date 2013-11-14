@@ -4,11 +4,7 @@
 
 .. image:: http://cloud.github.com/downloads/celery/celery/celery_128.png
 
-<<<<<<< HEAD
-:Version: 3.1.0rc4 (Cipater)
-=======
-:Version: 3.0.23 (Chiastic Slide)
->>>>>>> 3.0
+:Version: 3.1.3 (Cipater)
 :Web: http://celeryproject.org/
 :Download: http://pypi.python.org/pypi/celery/
 :Source: http://github.com/celery/celery/
@@ -26,15 +22,15 @@ machines.
 A task queue's input is a unit of work, called a task, dedicated worker
 processes then constantly monitor the queue for new work to perform.
 
-Celery communicates via messages using a broker
+Celery communicates via messages, usually using a broker
 to mediate between clients and workers.  To initiate a task a client puts a
 message on the queue, the broker then delivers the message to a worker.
 
 A Celery system can consist of multiple workers and brokers, giving way
 to high availability and horizontal scaling.
 
-Celery is written in Python, but the protocol can be implemented in any
-language.  So far there's RCelery_ for the Ruby programming language, and a
+Celery is a library written in Python, but the protocol can be implemented in
+any language.  So far there's RCelery_ for the Ruby programming language, and a
 `PHP client`, but language interoperability can also be achieved
 by using webhooks.
 
@@ -56,9 +52,9 @@ This is the last version to support Python 2.5,
 and from Celery 3.1, Python 2.6 or later is required.
 The last version to support Python 2.4 was Celery series 2.2.
 
-*Celery* requires a message broker to send and receive messages.
-The RabbitMQ, Redis and MongoDB broker transports are feature complete,
-but there's also support for a myriad of other solutions, including
+*Celery* is usually used with a message broker to send and receive messages.
+The RabbitMQ, Redis transports are feature complete,
+but there's also experimental support for a myriad of other solutions, including
 using SQLite for local development.
 
 *Celery* can run on a single machine, on multiple machines, or even
@@ -85,8 +81,8 @@ getting started tutorials:
 .. _`Next steps`:
     http://docs.celeryproject.org/en/latest/getting-started/next-steps.html
 
-Celery is...
-============
+Celery is…
+==========
 
 - **Simple**
 
@@ -123,20 +119,20 @@ Celery is...
     Custom pool implementations, serializers, compression schemes, logging,
     schedulers, consumers, producers, autoscalers, broker transports and much more.
 
-It supports...
-==============
+It supports…
+============
 
-    - **Brokers**
+    - **Message Transports**
 
         - RabbitMQ_, Redis_,
-        - MongoDB_, Beanstalk_,
-        - CouchDB_, SQLAlchemy_,
-        - Django ORM, Amazon SQS, `IronMQ`_
-        - and more...
+        - MongoDB_ (experimental), Amazon SQS (experimental),
+        - CouchDB_ (experimental), SQLAlchemy_ (experimental),
+        - Django ORM (experimental), `IronMQ`_
+        - and more…
 
     - **Concurrency**
 
-        - multiprocessing, Eventlet_, gevent_, threads/single threaded
+        - Prefork, Eventlet_, gevent_, threads/single threaded
 
     - **Result Stores**
 
@@ -233,28 +229,85 @@ Bundles
 Celery also defines a group of bundles that can be used
 to install Celery and the dependencies for a given feature.
 
+You can specify these in your requirements or on the ``pip`` comand-line
+by using brackets.  Multiple bundles can be specified by separating them by
+commas.
+::
+
+    $ pip install celery[librabbitmq]
+
+    $ pip install celery[librabbitmq,redis,auth,msgpack]
+
 The following bundles are available:
 
-:`celery-with-redis`_:
-    for using Redis as a broker.
+Serializers
+~~~~~~~~~~~
 
-:`celery-with-mongodb`_:
-    for using MongoDB as a broker.
+:celery[auth]:
+    for using the auth serializer.
 
-:`django-celery-with-redis`_:
-    for Django, and using Redis as a broker.
+:celery[msgpack]:
+    for using the msgpack serializer.
 
-:`django-celery-with-mongodb`_:
-    for Django, and using MongoDB as a broker.
+:celery[yaml]:
+    for using the yaml serializer.
 
-.. _`celery-with-redis`:
-    http://pypi.python.org/pypi/celery-with-redis/
-.. _`celery-with-mongodb`:
-    http://pypi.python.org/pypi/celery-with-mongdb/
-.. _`django-celery-with-redis`:
-    http://pypi.python.org/pypi/django-celery-with-redis/
-.. _`django-celery-with-mongodb`:
-    http://pypi.python.org/pypi/django-celery-with-mongdb/
+Concurrency
+~~~~~~~~~~~
+
+:celery[eventlet]:
+    for using the eventlet pool.
+
+:celery[gevent]:
+    for using the gevent pool.
+
+:celery[threads]:
+    for using the thread pool.
+
+Transports and Backends
+~~~~~~~~~~~~~~~~~~~~~~~
+
+:celery[librabbitmq]:
+    for using the librabbitmq C library.
+
+:celery[redis]:
+    for using Redis as a message transport or as a result backend.
+
+:celery[mongodb]:
+    for using MongoDB as a message transport, or as a result backend.
+
+:celery[sqs]:
+    for using Amazon SQS as a message transport.
+
+:celery[memcache]:
+    for using memcached as a result backend.
+
+:celery[cassandra]:
+    for using Apache Cassandra as a result backend.
+
+:celery[couchdb]:
+    for using CouchDB as a message transport.
+
+:celery[couchbase]:
+    for using CouchBase as a result backend.
+
+:celery[beanstalk]:
+    for using Beanstalk as a message transport.
+
+:celery[zookeeper]:
+    for using Zookeeper as a message transport.
+
+:celery[zeromq]:
+    for using ZeroMQ as a message transport.
+
+:celery[sqlalchemy]:
+    for using SQLAlchemy as a message transport, or as a result backend.
+
+:celery[pyro]:
+    for using the Pyro4 message transport.
+
+:celery[slmq]:
+    for using the SoftLayer Message Queue transport.
 
 .. _celery-installing-from-source:
 

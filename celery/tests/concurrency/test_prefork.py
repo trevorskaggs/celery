@@ -6,14 +6,12 @@ import time
 
 from itertools import cycle
 
-from mock import Mock, call, patch
-from nose import SkipTest
-
 from celery.five import items, range
 from celery.utils.functional import noop
-from celery.tests.case import AppCase
+from celery.tests.case import AppCase, Mock, SkipTest, call, patch
 try:
-    from celery.concurrency import processes as mp
+    from celery.concurrency import prefork as mp
+    from celery.concurrency import asynpool
 except ImportError:
 
     class _mp(object):
@@ -34,6 +32,7 @@ except ImportError:
             def apply_async(self, *args, **kwargs):
                 pass
     mp = _mp()  # noqa
+    asynpool = None  # noqa
 
 
 class Object(object):   # for writeable attributes.
@@ -92,6 +91,9 @@ class MockPool(object):
     def handle_result_event(self, *args, **kwargs):
         pass
 
+    def flush(self):
+        pass
+
     def grow(self, n=1):
         self._processes += n
 
@@ -99,6 +101,9 @@ class MockPool(object):
         self._processes -= n
 
     def apply_async(self, *args, **kwargs):
+        pass
+
+    def register_with_event_loop(self, loop):
         pass
 
 
@@ -136,11 +141,11 @@ class test_AsynPool(PoolCase):
             yield 1
             yield 2
         g = gen()
-        self.assertTrue(mp.gen_not_started(g))
+        self.assertTrue(asynpool.gen_not_started(g))
         next(g)
-        self.assertFalse(mp.gen_not_started(g))
+        self.assertFalse(asynpool.gen_not_started(g))
         list(g)
-        self.assertFalse(mp.gen_not_started(g))
+        self.assertFalse(asynpool.gen_not_started(g))
 
     def test_select(self):
         ebadf = socket.error()
@@ -148,13 +153,13 @@ class test_AsynPool(PoolCase):
         with patch('select.select') as select:
             select.return_value = ([3], [], [])
             self.assertEqual(
-                mp._select(set([3])),
+                asynpool._select(set([3])),
                 ([3], [], 0),
             )
 
             select.return_value = ([], [], [3])
             self.assertEqual(
-                mp._select(set([3]), None, set([3])),
+                asynpool._select(set([3]), None, set([3])),
                 ([3], [], 0),
             )
 
@@ -163,20 +168,20 @@ class test_AsynPool(PoolCase):
             select.side_effect = eintr
 
             readers = set([3])
-            self.assertEqual(mp._select(readers), ([], [], 1))
+            self.assertEqual(asynpool._select(readers), ([], [], 1))
             self.assertIn(3, readers)
 
         with patch('select.select') as select:
             select.side_effect = ebadf
             readers = set([3])
-            self.assertEqual(mp._select(readers), ([], [], 1))
+            self.assertEqual(asynpool._select(readers), ([], [], 1))
             select.assert_has_calls([call([3], [], [], 0)])
             self.assertNotIn(3, readers)
 
         with patch('select.select') as select:
             select.side_effect = MemoryError()
             with self.assertRaises(MemoryError):
-                mp._select(set([1]))
+                asynpool._select(set([1]))
 
         with patch('select.select') as select:
 
@@ -185,7 +190,7 @@ class test_AsynPool(PoolCase):
                 raise ebadf
             select.side_effect = se
             with self.assertRaises(MemoryError):
-                mp._select(set([3]))
+                asynpool._select(set([3]))
 
         with patch('select.select') as select:
 
@@ -195,75 +200,52 @@ class test_AsynPool(PoolCase):
                 raise ebadf
             select.side_effect = se2
             with self.assertRaises(socket.error):
-                mp._select(set([3]))
+                asynpool._select(set([3]))
 
         with patch('select.select') as select:
 
             select.side_effect = socket.error()
             select.side_effect.errno = 34134
             with self.assertRaises(socket.error):
-                mp._select(set([3]))
+                asynpool._select(set([3]))
 
     def test_promise(self):
         fun = Mock()
-        x = mp.promise(fun, (1, ), {'foo': 1})
+        x = asynpool.promise(fun, (1, ), {'foo': 1})
         x()
         self.assertTrue(x.ready)
         fun.assert_called_with(1, foo=1)
 
     def test_Worker(self):
-        w = mp.Worker(Mock(), Mock())
+        w = asynpool.Worker(Mock(), Mock())
         w.on_loop_start(1234)
-        w.outq.put.assert_called_with((mp.WORKER_UP, (1234, )))
+        w.outq.put.assert_called_with((asynpool.WORKER_UP, (1234, )))
 
 
 class test_ResultHandler(PoolCase):
 
     def test_process_result(self):
-        x = mp.ResultHandler(
+        x = asynpool.ResultHandler(
             Mock(), Mock(), {}, Mock(),
             Mock(), Mock(), Mock(), Mock(),
             fileno_to_outq={},
             on_process_alive=Mock(),
+            on_job_ready=Mock(),
         )
         self.assertTrue(x)
+        hub = Mock(name='hub')
+        recv = x._recv_message = Mock(name='recv_message')
+        recv.return_value = iter([])
         x.on_state_change = Mock()
+        x.register_with_event_loop(hub)
         proc = x.fileno_to_outq[3] = Mock()
         reader = proc.outq._reader
         reader.poll.return_value = False
         x.handle_event(6)  # KeyError
         x.handle_event(3)
-        reader.poll.assert_called_with(0)
-        self.assertFalse(x.on_state_change.called)
-
-        reader.poll.reset()
-        reader.poll.return_value = True
-        task = reader.recv.return_value = (1, (2, 3))
-        x.handle_event(3)
-        reader.poll.assert_called_with(0)
-        reader.recv.assert_called_with()
-        x.on_state_change.assert_called_with(task)
-        self.assertTrue(x._it)
-
-        reader.recv.return_value = None
-        x.handle_event(3)
-        self.assertIsNone(x._it)
-
-        x._state = mp.TERMINATE
-        it = x._process_result()
-        next(it)
-        with self.assertRaises(mp.CoroStop):
-            it.send(3)
-        x.handle_event(3)
-        self.assertIsNone(x._it)
-        x._state == mp.RUN
-
-        reader.recv.side_effect = EOFError()
-        it = x._process_result()
-        next(it)
-        with self.assertRaises(mp.CoroStop):
-            it.send(3)
-        reader.recv.side_effect = None
+        x._recv_message.assert_called_with(
+            hub.add_reader, 3, x.on_state_change,
+        )
 
 
 class test_TaskPool(PoolCase):
@@ -272,7 +254,7 @@ class test_TaskPool(PoolCase):
         pool = TaskPool(10)
         pool.start()
         self.assertTrue(pool._pool.started)
-        self.assertTrue(pool._pool._state == mp.RUN)
+        self.assertTrue(pool._pool._state == asynpool.RUN)
 
         _pool = pool._pool
         pool.stop()
@@ -303,10 +285,16 @@ class test_TaskPool(PoolCase):
     def test_info(self):
         pool = TaskPool(10)
         procs = [Object(pid=i) for i in range(pool.limit)]
-        pool._pool = Object(_pool=procs,
-                            _maxtasksperchild=None,
-                            timeout=10,
-                            soft_timeout=5)
+
+        class _Pool(object):
+            _pool = procs
+            _maxtasksperchild = None
+            timeout = 10
+            soft_timeout = 5
+
+            def human_write_stats(self, *args, **kwargs):
+                return {}
+        pool._pool = _Pool()
         info = pool.info
         self.assertEqual(info['max-concurrency'], pool.limit)
         self.assertEqual(info['max-tasks-per-child'], 'N/A')

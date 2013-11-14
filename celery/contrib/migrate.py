@@ -15,7 +15,6 @@ from itertools import cycle, islice
 
 from kombu import eventloop, Queue
 from kombu.common import maybe_declare
-from kombu.exceptions import StdChannelError
 from kombu.utils.encoding import ensure_bytes
 
 from celery.app import app_or_default
@@ -288,7 +287,7 @@ def start_filter(app, conn, filter, limit=None, timeout=1.0,
             _, mcount, _ = queue(consumer.channel).queue_declare(passive=True)
             if mcount:
                 state.total_apx += mcount
-        except conn.channel_errors + (StdChannelError, ):
+        except conn.channel_errors:
             pass
 
     # start migrating messages.
@@ -322,10 +321,10 @@ def move_by_idmap(map, **kwargs):
 
     Example::
 
-        >>> reroute_idmap({
-        ...     '5bee6e82-f4ac-468e-bd3d-13e8600250bc': Queue(...),
-        ...     'ada8652d-aef3-466b-abd2-becdaf1b82b3': Queue(...),
-        ...     '3a2b140d-7db1-41ba-ac90-c36a0ef4ab1f': Queue(...)},
+        >>> move_by_idmap({
+        ...     '5bee6e82-f4ac-468e-bd3d-13e8600250bc': Queue('name'),
+        ...     'ada8652d-aef3-466b-abd2-becdaf1b82b3': Queue('name'),
+        ...     '3a2b140d-7db1-41ba-ac90-c36a0ef4ab1f': Queue('name')},
         ...   queues=['hipri'])
 
     """
@@ -343,9 +342,9 @@ def move_by_taskmap(map, **kwargs):
 
     Example::
 
-        >>> reroute_idmap({
-        ...     'tasks.add': Queue(...),
-        ...     'tasks.mul': Queue(...),
+        >>> move_by_taskmap({
+        ...     'tasks.add': Queue('name'),
+        ...     'tasks.mul': Queue('name'),
         ... })
 
     """

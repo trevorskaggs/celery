@@ -88,7 +88,7 @@ together:
 
     CELERYD_FORCE_EXECV = True
 
-This setting is recommended for all users using the processes pool,
+This setting is recommended for all users using the prefork pool,
 but especially users also using time limits or a max tasks per child
 setting.
 
@@ -226,7 +226,7 @@ the Django ``runserver`` command.
 When auto-reload is enabled the worker starts an additional thread
 that watches for changes in the file system.  New modules are imported,
 and already imported modules are reloaded whenever a change is detected,
-and if the processes pool is used the child processes will finish the work
+and if the prefork pool is used the child processes will finish the work
 they are doing and exit, so that they can be replaced by fresh processes
 effectively reloading the code.
 
@@ -303,7 +303,7 @@ that filter for tasks to annotate:
             if task.name.startswith('tasks.'):
                 return {'rate_limit': '10/s'}
 
-    CELERY_ANNOTATIONS = (MyAnnotate(), {...})
+    CELERY_ANNOTATIONS = (MyAnnotate(), {…})
 
 ``current`` provides the currently executing task
 -------------------------------------------------
@@ -326,7 +326,7 @@ executing task.
             # retry in 10 seconds.
             current.retry(countdown=10, exc=exc)
 
-Previously you would have to type ``update_twitter_status.retry(...)``
+Previously you would have to type ``update_twitter_status.retry(…)``
 here, which can be annoying for long task names.
 
 .. note::

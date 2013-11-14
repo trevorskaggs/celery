@@ -1,22 +1,20 @@
 from __future__ import absolute_import
 
-from mock import Mock
-
 from celery.canvas import (
     Signature,
     chain,
     group,
     chord,
-    subtask,
+    signature,
     xmap,
     xstarmap,
     chunks,
     _maybe_group,
-    maybe_subtask,
+    maybe_signature,
 )
 from celery.result import EagerResult
 
-from celery.tests.case import AppCase
+from celery.tests.case import AppCase, Mock
 
 SIG = Signature({'task': 'TASK',
                  'args': ('A1', ),
@@ -80,14 +78,14 @@ class test_Signature(CanvasCase):
         )
 
     def test_link(self):
-        x = subtask(SIG)
+        x = signature(SIG)
         x.link(SIG)
         x.link(SIG)
         self.assertIn(SIG, x.options['link'])
         self.assertEqual(len(x.options['link']), 1)
 
     def test_link_error(self):
-        x = subtask(SIG)
+        x = signature(SIG)
         x.link_error(SIG)
         x.link_error(SIG)
         self.assertIn(SIG, x.options['link_error'])
@@ -146,11 +144,11 @@ class test_Signature(CanvasCase):
         self.assertEqual(r.id, 'foo')
 
     def test_AsyncResult_when_not_registered(self):
-        s = subtask('xxx.not.registered', app=self.app)
+        s = signature('xxx.not.registered', app=self.app)
         self.assertTrue(s.AsyncResult)
 
     def test_apply_async_when_not_registered(self):
-        s = subtask('xxx.not.registered', app=self.app)
+        s = signature('xxx.not.registered', app=self.app)
         self.assertTrue(s._apply_async)
 
 
@@ -205,8 +203,8 @@ class test_chain(CanvasCase):
 
     def test_reverse(self):
         x = self.add.s(2, 2) | self.add.s(2)
-        self.assertIsInstance(subtask(x), chain)
-        self.assertIsInstance(subtask(dict(x)), chain)
+        self.assertIsInstance(signature(x), chain)
+        self.assertIsInstance(signature(dict(x)), chain)
 
     def test_always_eager(self):
         self.app.conf.CELERY_ALWAYS_EAGER = True
@@ -253,8 +251,8 @@ class test_group(CanvasCase):
 
     def test_reverse(self):
         x = group([self.add.s(2, 2), self.add.s(4, 4)])
-        self.assertIsInstance(subtask(x), group)
-        self.assertIsInstance(subtask(dict(x)), group)
+        self.assertIsInstance(signature(x), group)
+        self.assertIsInstance(signature(dict(x)), group)
 
     def test_maybe_group_sig(self):
         self.assertListEqual(
@@ -269,8 +267,8 @@ class test_group(CanvasCase):
         self.assertTrue(group.from_dict(dict(x)))
 
     def test_call_empty_group(self):
-        x = group()
-        self.assertIsNone(x())
+        x = group(app=self.app)
+        self.assertFalse(len(x()))
 
     def test_skew(self):
         g = group([self.add.s(i, i) for i in range(10)])
@@ -287,8 +285,8 @@ class test_chord(CanvasCase):
 
     def test_reverse(self):
         x = chord([self.add.s(2, 2), self.add.s(4, 4)], body=self.mul.s(4))
-        self.assertIsInstance(subtask(x), chord)
-        self.assertIsInstance(subtask(dict(x)), chord)
+        self.assertIsInstance(signature(x), chord)
+        self.assertIsInstance(signature(dict(x)), chord)
 
     def test_clone_clones_body(self):
         x = chord([self.add.s(2, 2), self.add.s(4, 4)], body=self.mul.s(4))
@@ -318,14 +316,16 @@ class test_chord(CanvasCase):
         self.assertIn('without body', repr(x))
 
 
-class test_maybe_subtask(CanvasCase):
+class test_maybe_signature(CanvasCase):
 
     def test_is_None(self):
-        self.assertIsNone(maybe_subtask(None))
+        self.assertIsNone(maybe_signature(None, app=self.app))
 
     def test_is_dict(self):
-        self.assertIsInstance(maybe_subtask(dict(self.add.s())), Signature)
+        self.assertIsInstance(
+            maybe_signature(dict(self.add.s()), app=self.app), Signature,
+        )
 
     def test_when_sig(self):
         s = self.add.s()
-        self.assertIs(maybe_subtask(s), s)
+        self.assertIs(maybe_signature(s, app=self.app), s)

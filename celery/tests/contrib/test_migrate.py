@@ -1,10 +1,10 @@
 from __future__ import absolute_import, unicode_literals
 
 from contextlib import contextmanager
-from mock import patch
+
+from amqp import ChannelError
 
 from kombu import Connection, Producer, Queue, Exchange
-from kombu.exceptions import StdChannelError
 
 from kombu.transport.virtual import QoS
 
@@ -26,7 +26,7 @@ from celery.contrib.migrate import (
     move,
 )
 from celery.utils.encoding import bytes_t, ensure_bytes
-from celery.tests.case import AppCase, Mock, override_stdouts
+from celery.tests.case import AppCase, Mock, override_stdouts, patch
 
 # hack to ignore error at shutdown
 QoS.restore_at_shutdown = False
@@ -300,7 +300,7 @@ class test_migrate_tasks(AppCase):
 
             def effect(*args, **kwargs):
                 if kwargs.get('passive'):
-                    raise StdChannelError()
+                    raise ChannelError('some channel error')
                 return 0, 3, 0
             qd.side_effect = effect
             migrate_tasks(x, y, app=self.app)

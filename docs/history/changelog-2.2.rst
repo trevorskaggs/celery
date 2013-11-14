@@ -142,7 +142,7 @@ News
 .. _`logrotate.d`:
     http://www.ducea.com/2006/06/06/rotating-linux-log-files-part-2-logrotate/
 
-* :ref:`tut-otherqueues` now documents how to configure Redis/Database result
+* otherqueues tutorial now documents how to configure Redis/Database result
    backends.
 
 * gevent: Now supports ETA tasks.
@@ -449,7 +449,7 @@ Important Notes
 
 * Carrot has been replaced with `Kombu`_
 
-    Kombu is the next generation messaging framework for Python,
+    Kombu is the next generation messaging library for Python,
     fixing several flaws present in Carrot that was hard to fix
     without breaking backwards compatibility.
 
@@ -648,7 +648,7 @@ Important Notes
     When the worker encounters your breakpoint it will log the following
     information::
 
-        [INFO/MainProcess] Got task from broker:
+        [INFO/MainProcess] Received task:
             tasks.add[d7261c71-4962-47e5-b342-2448bedd20e8]
         [WARNING/PoolWorker-1] Remote Debugger:6900:
             Please telnet 127.0.0.1 6900.  Type `exit` in session to continue.

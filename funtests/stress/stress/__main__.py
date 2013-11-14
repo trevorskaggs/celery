@@ -30,6 +30,12 @@ class Stress(Command):
                    help='List all tests'),
             Option('-r', '--repeat', type='float', default=0,
                    help='Number of times to repeat the test suite'),
+            Option('-g', '--group', default='all',
+                   help='Specify test group (all|green)'),
+            Option('--diag', default=False, action='store_true',
+                   help='Enable diagnostics (slow)'),
+            Option('-J', '--no-join', default=False, action='store_true',
+                   help='Do not wait for task results'),
         )
 
 

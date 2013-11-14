@@ -15,6 +15,7 @@ import os
 import platform
 import re
 import sys
+import threading
 import time
 import warnings
 
@@ -44,9 +45,10 @@ from celery.utils.functional import noop
 from celery.utils.imports import qualname
 
 __all__ = [
-    'Case', 'AppCase', 'Mock', 'patch', 'call', 'skip_unless_module',
+    'Case', 'AppCase', 'Mock', 'MagicMock',
+    'patch', 'call', 'sentinel', 'skip_unless_module',
     'wrap_logger', 'with_environ', 'sleepdeprived',
-    'skip_if_environ', 'skip_if_quick', 'todo', 'skip', 'skip_if',
+    'skip_if_environ', 'todo', 'skip', 'skip_if',
     'skip_unless', 'mask_modules', 'override_stdouts', 'mock_module',
     'replace_module_value', 'sys_platform', 'reset_modules',
     'patch_modules', 'mock_context', 'mock_open', 'patch_many',
@@ -55,6 +57,8 @@ __all__ = [
 ]
 patch = mock.patch
 call = mock.call
+sentinel = mock.sentinel
+MagicMock = mock.MagicMock
 
 CASE_REDEFINES_SETUP = """\
 {name} (subclass of AppCase) redefines private "setUp", should be: "setup"\
@@ -309,7 +313,11 @@ class AppCase(Case):
         return UnitApp(*args, **kwargs)
 
     def setUp(self):
+        self._threads_at_setup = list(threading.enumerate())
         from celery import _state
+        from celery import result
+        result.task_join_will_block = \
+            _state.task_join_will_block = lambda: False
         self._current_app = current_app()
         self._default_app = _state.default_app
         trap = Trap()
@@ -322,6 +330,7 @@ class AppCase(Case):
         root = logging.getLogger()
         self.__rootlevel = root.level
         self.__roothandlers = root.handlers
+        _state._set_task_join_will_block(False)
         try:
             self.setup()
         except:
@@ -347,12 +356,19 @@ class AppCase(Case):
                 if isinstance(backend.client, DummyClient):
                     backend.client.cache.clear()
                 backend._cache.clear()
-        from celery._state import _tls, set_default_app
+        from celery._state import (
+            _tls, set_default_app, _set_task_join_will_block,
+        )
+        _set_task_join_will_block(False)
+
         set_default_app(self._default_app)
         _tls.current_app = self._current_app
         if self.app is not self._current_app:
             self.app.close()
         self.app = None
+        self.assertEqual(
+            self._threads_at_setup, list(threading.enumerate()),
+        )
 
     def _get_test_name(self):
         return '.'.join([self.__class__.__name__, self._testMethodName])
@@ -447,10 +463,6 @@ def skip_if_environ(env_var_name):
     return _wrap_test
 
 
-def skip_if_quick(fun):
-    return skip_if_environ('QUICKTEST')(fun)
-
-
 def _skip_test(reason, sign):
 
     def _wrap_test(fun):
@@ -495,14 +507,14 @@ def mask_modules(*modnames):
 
     For example:
 
-        >>> with missing_modules('sys'):
+        >>> with mask_modules('sys'):
         ...     try:
         ...         import sys
         ...     except ImportError:
         ...         print 'sys not found'
         sys not found
 
-        >>> import sys
+        >>> import sys  # noqa
         >>> sys.version
         (2, 5, 2, 'final', 0)
 

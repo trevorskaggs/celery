@@ -23,6 +23,12 @@ from kombu.utils.limits import TokenBucket  # noqa
 from celery.five import items
 from celery.utils.functional import LRUCache, first, uniq  # noqa
 
+try:
+    from django.utils.functional import LazyObject
+except ImportError:
+    class LazyObject(object):  # noqa
+        pass
+
 DOT_HEAD = """
 {IN}{type} {id} {{
 {INp}graph [{attrs}]
@@ -39,6 +45,12 @@ __all__ = ['GraphFormatter', 'CycleError', 'DependencyGraph',
            'ConfigurationView', 'LimitedSet']
 
 
+def force_mapping(m):
+    if isinstance(m, LazyObject):
+        m = m._wrapped
+    return DictAttribute(m) if not isinstance(m, Mapping) else m
+
+
 class GraphFormatter(object):
     _attr = DOT_ATTR.strip()
     _node = DOT_NODE.strip()
@@ -52,7 +64,7 @@ class GraphFormatter(object):
         'shape': 'box',
         'arrowhead': 'vee',
         'style': 'filled',
-        'fontname': 'Helvetica Neue',
+        'fontname': 'HelveticaNeue',
     }
     edge_scheme = {
         'color': 'darkseagreen4',
@@ -187,7 +199,7 @@ class DependencyGraph(object):
         return [t[0] for t in graph._khan62()]
 
     def valency_of(self, obj):
-        """Returns the valency (degree) of a vertex in the graph."""
+        """Return the valency (degree) of a vertex in the graph."""
         try:
             l = [len(self[obj])]
         except KeyError:
@@ -207,7 +219,7 @@ class DependencyGraph(object):
                 self.add_edge(obj, dep)
 
     def edges(self):
-        """Returns generator that yields for all edges in the graph."""
+        """Return generator that yields for all edges in the graph."""
         return (obj for obj, adj in items(self) if adj)
 
     def _khan62(self):
@@ -324,9 +336,9 @@ class DependencyGraph(object):
 
 
 class AttributeDictMixin(object):
-    """Adds attribute access to mappings.
+    """Augment classes with a Mapping interface by adding attribute access.
 
-    `d.key -> d[key]`
+    I.e. `d.key -> d[key]`.
 
     """
 
@@ -447,8 +459,7 @@ class ConfigurationView(AttributeDictMixin):
                              _order=[changes] + defaults)
 
     def add_defaults(self, d):
-        if not isinstance(d, Mapping):
-            d = DictAttribute(d)
+        d = force_mapping(d)
         self.defaults.insert(0, d)
         self._order.insert(1, d)
 
@@ -473,7 +484,7 @@ class ConfigurationView(AttributeDictMixin):
             return default
 
     def clear(self):
-        """Removes all changes, but keeps defaults."""
+        """Remove all changes, but keep defaults."""
         self.changes.clear()
 
     def setdefault(self, key, default):
@@ -557,8 +568,8 @@ class LimitedSet(object):
         self._data = {} if data is None else data
         self._heap = [] if heap is None else heap
         # make shortcuts
-        self.__iter__ = self._data.__iter__
-        self.__len__ = self._data.__len__
+        self.__len__ = self._heap.__len__
+        self.__iter__ = self._heap.__iter__
         self.__contains__ = self._data.__contains__
 
     def add(self, value, now=time.time):
@@ -619,7 +630,7 @@ class LimitedSet(object):
             i += 1
 
     def update(self, other, heappush=heappush):
-        if isinstance(other, self.__class__):
+        if isinstance(other, LimitedSet):
             self._data.update(other._data)
             self._heap.extend(other._heap)
             heapify(self._heap)

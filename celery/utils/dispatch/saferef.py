@@ -190,7 +190,7 @@ class BoundMethodWeakref(object):  # pragma: no cover
         """Return a strong reference to the bound method
 
         If the target cannot be retrieved, then will
-        return None, otherwise returns a bound instance
+        return None, otherwise return a bound instance
         method for our object and function.
 
         Note:
@@ -243,9 +243,7 @@ class BoundNonDescriptorMethodWeakref(BoundMethodWeakref):  # pragma: no cover
             which will be passed a pointer to this object.
 
         """
-        assert getattr(target.__self__, target.__name__) == target, \
-            "method %s isn't available as the attribute %s of %s" % (
-            target, target.__name__, target.__self__)
+        assert getattr(target.__self__, target.__name__) == target
         super(BoundNonDescriptorMethodWeakref, self).__init__(target,
                                                               on_delete)
 
@@ -253,7 +251,7 @@ class BoundNonDescriptorMethodWeakref(BoundMethodWeakref):  # pragma: no cover
         """Return a strong reference to the bound method
 
         If the target cannot be retrieved, then will
-        return None, otherwise returns a bound instance
+        return None, otherwise return a bound instance
         method for our object and function.
 
         Note:

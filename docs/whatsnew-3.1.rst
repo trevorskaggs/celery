@@ -3,10 +3,11 @@
 ===========================================
  What's new in Celery 3.1 (Cipater)
 ===========================================
+:Author: Ask Solem (ask at celeryproject.org)
 
 .. sidebar:: Change history
 
-    What's new documents describes the changes in major versions,
+    What's new documents describe the changes in major versions,
     we also have a :ref:`changelog` that lists the changes in bugfix
     releases (0.0.x), while older series are archived under the :ref:`history`
     section.
@@ -27,135 +28,659 @@ To read more about Celery you should go read the :ref:`introduction <intro>`.
 While this version is backward compatible with previous versions
 it's important that you read the following section.
 
-This version is officially supported on CPython 2.6, 2.7, 3.2 and 3.3,
-as well as PyPy and Jython.
-
-Highlights
-==========
-
-.. topic:: Overview
-
-    - Now supports Django out of the box.
-
-        See the new tutorial at :ref:`django-first-steps`.
-
-    - XXX2
-
-    - XXX3
-
-        YYY3
+This version is officially supported on CPython 2.6, 2.7 and 3.3,
+and also supported on PyPy.
 
 .. _`website`: http://celeryproject.org/
-.. _`django-celery changelog`:
-    http://github.com/celery/django-celery/tree/master/Changelog
-.. _`django-celery 3.0`: http://pypi.python.org/pypi/django-celery/
+
+.. topic:: Table of Contents
+
+    Make sure you read the important notes before upgrading to this version.
 
 .. contents::
     :local:
     :depth: 2
+
+Preface
+=======
+
+Deadlocks have long plagued our workers, and while uncommon they are
+not acceptable.  They are also infamous for being extremely hard to diagnose
+and reproduce, so to make this job easier I wrote a stress test suite that
+bombards the worker with different tasks in an attempt to break it.
+
+What happens if thousands of worker child processes are killed every
+second? what if we also kill the broker connection every 10
+seconds?  These are examples of what the stress test suite will do to the
+worker, and it reruns these tests using different configuration combinations
+to find edge case bugs.
+
+The end result was that I had to rewrite the prefork pool to avoid the use
+of the POSIX semaphore.  This was extremely challenging, but after
+months of hard work the worker now finally passes the stress test suite.
+
+There's probably more bugs to find, but the good news is
+that we now have a tool to reproduce them, so should you be so unlucky to
+experience a bug then we'll write a test for it and squash it!
+
+Note that I have also moved many broker transports into experimental status:
+the only transports recommended for production use today is RabbitMQ and
+Redis.
+
+I don't have the resources to maintain all of them, so bugs are left
+unresolved.  I wish that someone will step up and take responsibility for
+these transports or donate resources to improve them, but  as the situation
+is now I don't think the quality is up to date with the rest of the code-base
+so I cannot recommend them for production use.
+
+The next version of Celery 3.2 will focus on performance and removing
+rarely used parts of the library.  Work has also started on a new message
+protocol, supporting multiple languages and more.  The initial draft can
+be found :ref:`here <protov2draft>`.
+
+This has probably been the hardest release I've worked on, so no
+introduction to this changelog would be complete without a massive
+thank you to everyone who contributed and helped me test it!
+
+Thank you for your support!
+
+*— Ask Solem*
 
 .. _v310-important:
 
 Important Notes
 ===============
 
-XXX
----
+Dropped support for Python 2.5
+------------------------------
 
-YYY
+Celery now requires Python 2.6 or later.
+
+The new dual code base runs on both Python 2 and 3, without
+requiring the ``2to3`` porting tool.
+
+.. note::
+
+    This is also the last version to support Python 2.6! From Celery 3.2 and
+    onwards Python 2.7 or later will be required.
+
+Last version to enable Pickle by default
+----------------------------------------
+
+Starting from Celery 3.2 the default serializer will be json.
+
+If you depend on pickle being accepted you should be prepared
+for this change by explicitly allowing your worker
+to consume pickled messages using the :setting:`CELERY_ACCEPT_CONTENT`
+setting:
+
+.. code-block:: python
+
+    CELERY_ACCEPT_CONTENT = ['pickle', 'json', 'msgpack', 'yaml']
+
+Make sure you only select the serialization formats you'll actually be using,
+and make sure you have properly secured your broker from unwanted access
+(see the :ref:`Security Guide <guide-security>`).
+
+The worker will emit a deprecation warning if you don't define this setting.
+
+.. topic:: for Kombu users
+
+    Kombu 3.0 no longer accepts pickled messages by default, so if you
+    use Kombu directly then you have to configure your consumers:
+    see the :ref:`Kombu 3.0 Changelog <kombu:version-3.0.0>` for more
+    information.
+
+Old command-line programs removed and deprecated
+------------------------------------------------
+
+Everyone should move to the new :program:`celery` umbrella
+command, so we are incrementally deprecating the old command names.
+
+In this version we've removed all commands that are not used
+in init scripts.  The rest will be removed in 3.2.
+
++-------------------+--------------+-------------------------------------+
+| Program           | New Status   | Replacement                         |
++===================+==============+=====================================+
+| ``celeryd``       | *DEPRECATED* | :program:`celery worker`            |
++-------------------+--------------+-------------------------------------+
+| ``celerybeat``    | *DEPRECATED* | :program:`celery beat`              |
++-------------------+--------------+-------------------------------------+
+| ``celeryd-multi`` | *DEPRECATED* | :program:`celery multi`             |
++-------------------+--------------+-------------------------------------+
+| ``celeryctl``     | **REMOVED**  | :program:`celery inspect|control`   |
++-------------------+--------------+-------------------------------------+
+| ``celeryev``      | **REMOVED**  | :program:`celery events`            |
++-------------------+--------------+-------------------------------------+
+| ``camqadm``       | **REMOVED**  | :program:`celery amqp`              |
++-------------------+--------------+-------------------------------------+
+
+If this is not a new installation then you may want to remove the old
+commands:
+
+.. code-block:: bash
+
+    $ pip uninstall celery
+    $ # repeat until it fails
+    # ...
+    $ pip uninstall celery
+    $ pip install celery
+
+Please run :program:`celery --help` for help using the umbrella command.
 
 .. _v310-news:
 
 News
 ====
 
-XXX
----
+Prefork Pool Improvements
+-------------------------
 
-YYY
+These improvements are only active if you use an async capable
+transport.  This means only RabbitMQ (AMQP) and Redis are supported
+at this point and other transports will still use the thread-based fallback
+implementation.
+
+- Pool is now using one IPC queue per child process.
+
+    Previously the pool shared one queue between all child processes,
+    using a POSIX semaphore as a mutex to achieve exclusive read and write
+    access.
+
+    The POSIX semaphore has now been removed and each child process
+    gets a dedicated queue.  This means that the worker will require more
+    file descriptors (two descriptors per process), but it also means
+    that performance is improved and we can send work to individual child
+    processes.
+
+    POSIX semaphores are not released when a process is killed, so killing
+    processes could lead to a deadlock if it happened while the semaphore was
+    acquired.  There is no good solution to fix this, so the best option
+    was to remove the semaphore.
+
+- Asynchronous write operations
+
+    The pool now uses async I/O to send work to the child processes.
+
+- Lost process detection is now immediate.
+
+    If a child process is killed or exits mysteriously the pool previously
+    had to wait for 30 seconds before marking the task with a
+    :exc:`~celery.exceptions.WorkerLostError`.  It had to do this because
+    the outqueue was shared between all processes, and the pool could not
+    be certain whether the process completed the task or not.  So an arbitrary
+    timeout of 30 seconds was chosen, as it was believed that the outqueue
+    would have been drained by this point.
+
+    This timeout is no longer necessary, and so the task can be marked as
+    failed as soon as the pool gets the notification that the process exited.
+
+- Rare race conditions fixed
+
+    Most of these bugs were never reported to us, but was discovered while
+    running the new stress test suite.
+
+Caveats
+~~~~~~~
+
+.. topic:: Long running tasks
+
+    The new pool will send tasks to a child process as long as the process
+    inqueue is writable, and since the socket is buffered this means
+    that the processes are, in effect, prefetching tasks.
+
+    This benefits performance but it also means that other tasks may be stuck
+    waiting for a long running task to complete::
+
+        -> send T1 to Process A
+        # A executes T1
+        -> send T2 to Process B
+        # B executes T2
+        <- T2 complete
+
+        -> send T3 to Process A
+        # A still executing T1, T3 stuck in local buffer and
+        # will not start until T1 returns
+
+    The buffer size varies based on the operating system: some may
+    have a buffer as small as 64kb but on recent Linux versions the buffer
+    size is 1MB (can only be changed system wide).
+
+    You can disable this prefetching behavior by enabling the :option:`-Ofair`
+    worker option:
+
+    .. code-block:: bash
+
+        $ celery -A proj worker -l info -Ofair
+
+    With this option enabled the worker will only write to workers that are
+    available for work, disabling the prefetch behavior.
+
+.. topic:: Max tasks per child
+
+    If a process exits and pool prefetch is enabled the worker may have
+    already written many tasks to the process inqueue, and these tasks
+    must then be moved back and rewritten to a new process.
+
+    This is very expensive if you have ``--maxtasksperchild`` set to a low
+    value (e.g. less than 10), so if you need to enable this option
+    you should also enable ``-Ofair`` to turn off the prefetching behavior.
+
+Django supported out of the box
+-------------------------------
+
+Celery 3.0 introduced a shiny new API, but sadly did not
+have a solution for Django users.
+
+The situation changes with this version as Django is now supported
+in core and new Django users coming to Celery are now expected
+to use the new API directly.
+
+The Django community has a convention where there's a separate
+django-x package for every library, acting like a bridge between
+Django and the library.
+
+Having a separate project for Django users has been a pain for Celery,
+with multiple issue trackers and multiple documentation
+sources, and then lastly since 3.0 we even had different APIs.
+
+With this version we challenge that convention and Django users will
+use the same library, the same API and the same documentation as
+everyone else.
+
+There is no rush to port your existing code to use the new API,
+but if you would like to experiment with it you should know that:
+
+- You need to use a Celery application instance.
+
+    The new Celery API introduced in 3.0 requires users to instantiate the
+    library by creating an application:
+
+    .. code-block:: python
+
+        from celery import Celery
+
+        app = Celery()
+
+- You need to explicitly integrate Celery with Django
+
+    Celery will not automatically use the Django settings, so you can
+    either configure Celery separately or you can tell it to use the Django
+    settings with:
+
+    .. code-block:: python
+
+        app.config_from_object('django.conf:settings')
+
+    Neither will it automatically traverse your installed apps to find task
+    modules, but this still available as an option you must enable:
+
+    .. code-block:: python
+
+        from django.conf import settings
+        app.autodiscover_tasks(settings.INSTALLED_APPS)
+
+- You no longer use ``manage.py``
+
+    Instead you use the :program:`celery` command directly:
+
+    .. code-block:: bash
+
+        celery -A proj worker -l info
+
+    For this to work your app module must store the  :envvar:`DJANGO_SETTINGS_MODULE`
+    environment variable, see the example in the :ref:`Django
+    guide <django-first-steps>`.
+
+To get started with the new API you should first read the :ref:`first-steps`
+tutorial, and then you should read the Django specific instructions in
+:ref:`django-first-steps`.
+
+The fixes and improvements applied by the django-celery library are now
+automatically applied by core Celery when it detects that
+the :envvar:`DJANGO_SETTINGS_MODULE` environment variable is set.
+
+The distribution ships with a new example project using Django
+in :file:`examples/django`:
+
+http://github.com/celery/celery/tree/3.1/examples/django
+
+Some features still require the :mod:`django-celery` library:
+
+    - Celery does not implement the Django database or cache result backends.
+    - Celery does not ship with the database-based periodic task
+        scheduler.
+
+.. note::
+
+    If you're still using django-celery when you upgrade to Celery 3.1
+    then it's crucial that your settings module includes
+    the ``djcelery.setup_loader()`` line, as this will
+    no longer happen as a side-effect of importing the :mod:`djcelery`
+    module.
+
+Events are now ordered using logical time
+-----------------------------------------
+
+Keeping physical clocks in perfect sync is impossible, so using
+timestamps to order events in a distributed system is not reliable.
+
+Celery event messages have included a logical clock value for some time,
+but starting with this version that field is also used to order them.
+
+Also, events now record timezone information
+by including a new ``utcoffset`` field in the event message.
+This is a signed integer telling the difference from UTC time in hours,
+so e.g. an even sent from the Europe/London timezone in daylight savings
+time will have an offset of 1.
+
+:class:`@events.Receiver` will automatically convert the timestamps
+to the local timezone.
+
+.. note::
+
+    The logical clock is synchronized with other nodes
+    in the same cluster (neighbors), so this means that the logical
+    epoch will start at the point when the first worker in the cluster
+    starts.
+
+    If all of the workers are shutdown the clock value will be lost
+    and reset to 0, to protect against this you should specify
+    a :option:`--statedb` so that the worker can persist the clock
+    value at shutdown.
+
+    You may notice that the logical clock is an integer value and
+    increases very rapidly.  Do not worry about the value overflowing
+    though, as even in the most busy clusters it may take several
+    millennia before the clock exceeds a 64 bits value.
+
+New worker node name format (``name@host``)
+-------------------------------------------
+
+Node names are now constructed by two elements: name and hostname separated by '@'.
+
+This change was made to more easily identify multiple instances running
+on the same machine.
+
+If a custom name is not specified then the
+worker will use the name 'celery' by default, resulting in a
+fully qualified node name of 'celery@hostname':
+
+.. code-block:: bash
+
+    $ celery worker -n example.com
+    celery@example.com
+
+To also set the name you must include the @:
+
+.. code-block:: bash
+
+    $ celery worker -n worker1@example.com
+    worker1@example.com
+
+The worker will identify itself using the fully qualified
+node name in events and broadcast messages, so where before
+a worker would identify itself as 'worker1.example.com', it will now
+use 'celery@worker1.example.com'.
+
+Remember that the ``-n`` argument also supports simple variable
+substitutions, so if the current hostname is *george.example.com*
+then the ``%h`` macro will expand into that:
+
+.. code-block:: bash
+
+    $ celery worker -n worker1@%h
+    worker1@george.example.com
+
+The available substitutions are as follows:
+
++---------------+---------------------------------------+
+| Variable      | Substitution                          |
++===============+=======================================+
+| ``%h``        | Full hostname (including domain name) |
++---------------+---------------------------------------+
+| ``%d``        | Domain name only                      |
++---------------+---------------------------------------+
+| ``%n``        | Hostname only (without domain name)   |
++---------------+---------------------------------------+
+| ``%%``        | The character ``%``                   |
++---------------+---------------------------------------+
+
+Bound tasks
+-----------
+
+The task decorator can now create "bound tasks", which means that the
+task will receive the ``self`` argument.
+
+.. code-block:: python
+
+    @app.task(bind=True)
+    def send_twitter_status(self, oauth, tweet):
+        try:
+            twitter = Twitter(oauth)
+            twitter.update_status(tweet)
+        except (Twitter.FailWhaleError, Twitter.LoginError) as exc:
+            raise self.retry(exc=exc)
+
+Using *bound tasks* is now the recommended approach whenever
+you need access to the task instance or request context.
+Previously one would have to refer to the name of the task
+instead (``send_twitter_status.retry``), but this could lead to problems
+in some configurations.
+
+Mingle: Worker synchronization
+------------------------------
+
+The worker will now attempt to synchronize with other workers in
+the same cluster.
+
+Synchronized data currently includes revoked tasks and logical clock.
+
+This only happens at startup and causes a one second startup delay
+to collect broadcast responses from other workers.
+
+You can disable this bootstep using the ``--without-mingle`` argument.
+
+Gossip: Worker <-> Worker communication
+---------------------------------------
+
+Workers are now passively subscribing to worker related events like
+heartbeats.
+
+This means that a worker knows what other workers are doing and
+can detect if they go offline.  Currently this is only used for clock
+synchronization, but there are many possibilities for future additions
+and you can write extensions that take advantage of this already.
+
+Some ideas include consensus protocols, reroute task to best worker (based on
+resource usage or data locality) or restarting workers when they crash.
+
+We believe that this is a small addition but one that really opens
+up for amazing possibilities.
+
+You can disable this bootstep using the ``--without-gossip`` argument.
+
+Bootsteps: Extending the worker
+-------------------------------
+
+By writing bootsteps you can now easily extend the consumer part
+of the worker to add additional features, like custom message consumers.
+
+The worker has been using bootsteps for some time, but these were never
+documented.  In this version the consumer part of the worker
+has also been rewritten to use bootsteps and the new :ref:`guide-extending`
+guide documents examples extending the worker, including adding
+custom message consumers.
+
+See the :ref:`guide-extending` guide for more information.
+
+.. note::
+
+    Bootsteps written for older versions will not be compatible
+    with this version, as the API has changed significantly.
+
+    The old API was experimental and internal but should you be so unlucky
+    to use it then please contact the mailing-list and we will help you port
+    the bootstep to the new API.
+
+New RPC result backend
+----------------------
+
+This new experimental version of the ``amqp`` result backend is a good
+alternative to use in classical RPC scenarios, where the process that initiates
+the task is always the process to retrieve the result.
+
+It uses Kombu to send and retrieve results, and each client
+uses a unique queue for replies to be sent to.  This avoids
+the significant overhead of the original amqp backend which creates
+one queue per task.
+
+By default results sent using this backend will not persist, so they won't
+survive a broker restart.  You can enable
+the :setting:`CELERY_RESULT_PERSISTENT` setting to change that.
+
+.. code-block:: python
+
+    CELERY_RESULT_BACKEND = 'rpc'
+    CELERY_RESULT_PERSISTENT = True
+
+Note that chords are currently not supported by the RPC backend.
+
+Time limits can now be set by the client
+----------------------------------------
+
+Two new options have been added to the Calling API: ``time_limit`` and
+``soft_time_limit``:
+
+.. code-block:: python
+
+    >>> res = add.apply_async((2, 2), time_limit=10, soft_time_limit=8)
+
+    >>> res = add.subtask((2, 2), time_limit=10, soft_time_limit=8).delay()
+
+    >>> res = add.s(2, 2).set(time_limit=10, soft_time_limit=8).delay()
+
+Contributed by Mher Movsisyan.
+
+Redis: Broadcast messages and virtual hosts
+-------------------------------------------
+
+Broadcast messages are currently seen by all virtual hosts when
+using the Redis transport.  You can now fix this by enabling a prefix to all channels
+so that the messages are separated:
+
+.. code-block:: python
+
+    BROKER_TRANSPORT_OPTIONS = {'fanout_prefix': True}
+
+Note that you'll not be able to communicate with workers running older
+versions or workers that does not have this setting enabled.
+
+This setting will be the default in a future version.
+
+Related to Issue #1490.
+
+:mod:`pytz` replaces ``python-dateutil`` dependency
+---------------------------------------------------
+
+Celery no longer depends on the ``python-dateutil`` library,
+but instead a new dependency on the :mod:`pytz` library was added.
+
+The :mod:`pytz` library was already recommended for accurate timezone support.
+
+This also means that dependencies are the same for both Python 2 and
+Python 3, and that the :file:`requirements/default-py3k.txt` file has
+been removed.
+
+Support for Setuptools extra requirements
+-----------------------------------------
+
+Pip now supports the :mod:`setuptools` extra requirements format,
+so we have removed the old bundles concept, and instead specify
+setuptools extras.
+
+You install extras by specifying them inside brackets:
+
+.. code-block:: bash
+
+    $ pip install celery[redis,mongodb]
+
+The above will install the dependencies for Redis and MongoDB.  You can list
+as many extras as you want.
+
+
+.. warning::
+
+    You can't use the ``celery-with-*`` packages anymore, as these will not be
+    updated to use Celery 3.1.
+
++-------------+-------------------------+---------------------------+
+| Extension   | Requirement entry       | Type                      |
++=============+=========================+===========================+
+| Redis       | ``celery[redis]``       | transport, result backend |
++-------------+-------------------------+---------------------------+
+| MongoDB     | ``celery[mongodb]``     | transport, result backend |
++-------------+-------------------------+---------------------------+
+| CouchDB     | ``celery[couchdb]``     | transport                 |
++-------------+-------------------------+---------------------------+
+| Beanstalk   | ``celery[beanstalk]``   | transport                 |
++-------------+-------------------------+---------------------------+
+| ZeroMQ      | ``celery[zeromq]``      | transport                 |
++-------------+-------------------------+---------------------------+
+| Zookeeper   | ``celery[zookeeper]``   | transport                 |
++-------------+-------------------------+---------------------------+
+| SQLAlchemy  | ``celery[sqlalchemy]``  | transport, result backend |
++-------------+-------------------------+---------------------------+
+| librabbitmq | ``celery[librabbitmq]`` | transport (C amqp client) |
++-------------+-------------------------+---------------------------+
+
+The complete list with examples is found in the :ref:`bundles` section.
+
+``subtask.__call__()`` now executes the task directly
+-----------------------------------------------------
+
+A misunderstanding led to ``Signature.__call__`` being an alias of
+``.delay`` but this does not conform to the calling API of ``Task`` which
+calls the underlying task method.
+
+This means that:
+
+.. code-block:: python
+
+    @app.task
+    def add(x, y):
+        return x + y
+
+    add.s(2, 2)()
+
+now does the same as calling the task directly:
+
+.. code-block:: python
+
+    add(2, 2)
 
 In Other News
 -------------
 
-- No longer supports Python 2.5
+- Now depends on :ref:`Kombu 3.0 <kombu:version-3.0.0>`.
 
-    From this version Celery requires Python 2.6 or later.
+- Now depends on :mod:`billiard` version 3.3.
 
-- No longer depends on ``python-dateutil``
+- Worker will now crash if running as the root user with pickle enabled.
 
-    Instead a dependency on :mod:`pytz` has been added, which was already
-    recommended in the documentation for accurate timezone support.
+- Canvas: ``group.apply_async`` and ``chain.apply_async`` no longer starts
+  separate task.
 
-    This also means that dependencies are on the same on both Python 2 and
-    Python 3, and that the :file:`requirements/default-py3k.txt` file has
-    been removed.
+    That the group and chord primitives supported the "calling API" like other
+    subtasks was a nice idea, but it was useless in practice and often
+    confused users.  If you still want this behavior you can define a
+    task to do it for you.
 
-- Time limits can now be set by the client for individual tasks (Issue #802).
+- New method ``Signature.freeze()`` can be used to "finalize"
+  signatures/subtask.
 
-    You can set both hard and soft time limits using the ``timeout`` and
-    ``soft_timeout`` calling options:
-
-    .. code-block:: python
-
-        >>> res = add.apply_async((2, 2), timeout=10, soft_timeout=8)
-
-        >>> res = add.subtask((2, 2), timeout=10, soft_timeout=8)()
-
-        >>> res = add.s(2, 2).set(timeout=10, soft_timeout=8)()
-
-    Contributed by Mher Movsisyan.
-
-- Old command-line programs removed and deprecated
-
-    The goal is that everyone should move the new :program:`celery` umbrella
-    command, so with this version we deprecate the old command names,
-    and remove commands that are not used in init scripts.
-
-    +-------------------+--------------+-------------------------------------+
-    | Program           | New Status   | Replacement                         |
-    +===================+==============+=====================================+
-    | ``celeryd``       | *DEPRECATED* | :program:`celery worker`            |
-    +-------------------+--------------+-------------------------------------+
-    | ``celerybeat``    | *DEPRECATED* | :program:`celery beat`              |
-    +-------------------+--------------+-------------------------------------+
-    | ``celeryd-multi`` | *DEPRECATED* | :program:`celery multi`             |
-    +-------------------+--------------+-------------------------------------+
-    | ``celeryctl``     | **REMOVED**  | :program:`celery`                   |
-    +-------------------+--------------+-------------------------------------+
-    | ``celeryev``      | **REMOVED**  | :program:`celery events`            |
-    +-------------------+--------------+-------------------------------------+
-    | ``camqadm``       | **REMOVED**  | :program:`celery amqp`              |
-    +-------------------+--------------+-------------------------------------+
-
-    Please see :program:`celery --help` for help using the umbrella command.
-
-- Celery now support Django out of the box.
-
-    The fixes and improvements applied by the django-celery library is now
-    automatically applied by core Celery when it detects that
-    the :envvar:`DJANGO_SETTINGS_MODULE` environment setting is set.
-
-    The distribution ships with a new example project using Django
-    in :file:`examples/django`:
-
-    http://github.com/celery/celery/tree/master/examples/django
-
-    There are cases where you would want to use django-celery still
-    as:
-
-        - Celery does not implement the Django database or cache backends.
-        - Celery does not automatically read configuration from Django settings.
-        - Celery does not ship with the database-based periodic task
-          scheduler.
-
-    If you are using django-celery then it is crucial that you have
-    ``djcelery.setup_loader()`` in your settings module, as this
-    no longer happens as a side-effect of importing the :mod:`djcelery`
-    module.
-
-- ``Signature.freeze()`` can now be used to "finalize" subtasks
-
-    Regular subtask:
+    Regular signature:
 
     .. code-block:: python
 
@@ -178,50 +703,8 @@ In Other News
         >>> g()
         <GroupResult: e1094b1d-08fc-4e14-838e-6d601b99da6d [70c0fb3d-b60e-4b22-8df7-aa25b9abc86d, 58fcd260-2e32-4308-a2ea-f5be4a24f7f4]>
 
-
-
-- The consumer part of the worker has been rewritten to use Bootsteps.
-
-    By writing bootsteps you can now easily extend the consumer part
-    of the worker to add additional features, or even message consumers.
-
-    See the :ref:`guide-extending` guide for more information.
-
-- New Bootsteps implementation.
-
-    The bootsteps and namespaces have been refactored for the better,
-    sadly this means that bootsteps written for older versions will
-    not be compatible with this version.
-
-    Bootsteps were never publicly documented and was considered
-    experimental, so chances are no one has ever implemented custom
-    bootsteps, but if you did please contact the mailing-list
-    and we'll help you port them.
-
-    - Module ``celery.worker.bootsteps`` renamed to :mod:`celery.bootsteps`
-    - The name of a bootstep no longer contain the name of the namespace.
-    - A bootstep can now be part of multiple namespaces.
-    - Namespaces must instantiate individual bootsteps, and
-      there's no global registry of bootsteps.
-
-- New result backend with RPC semantics (``rpc``).
-
-    This version of the ``amqp`` result backend is a very good alternative
-    to use in classical RPC scenarios, where the process that initiates
-    the task is always the process to retrieve the result.
-
-    It uses Kombu to send and retrieve results, and each client
-    will create a unique queue for replies to be sent to. Avoiding
-    the significant overhead of the original amqp backend which creates
-    one queue per task, but it's important to consider that it will
-    not be possible to retrieve the result from another process,
-    and that results sent using this backend is not persistent and so will
-    not survive a broker restart.
-
-    It has only been tested with the AMQP and Redis transports.
-
-- App instances can now add additional command line options
-  to the worker and beat programs.
+-  New ability to specify additional command line options
+   to the worker and beat programs.
 
     The :attr:`@Celery.user_options` attribute can be used
     to add additional command-line arguments, and expects
@@ -230,41 +713,17 @@ In Other News
     .. code-block:: python
 
         from celery import Celery
-        from optparse import make_option as Option
+        from celery.bin import Option
 
         app = Celery()
         app.user_options['worker'].add(
             Option('--my-argument'),
         )
 
-    See :ref:`guide-extending` for more information.
-
-- Events are now ordered using logical time.
-
-    Timestamps are not a reliable way to order events in a distributed system,
-    for one the floating point value does not have enough precision, but
-    also it's impossible to keep physical clocks in sync.
-
-    Celery event messages have included a logical clock value for some time,
-    but starting with this version that field is also used to order them
-    (that is if the monitor is using :mod:`celery.events.state`).
-
-    The logical clock is currently implemented using Lamport timestamps,
-    which does not have a high degree of accuracy, but should be good
-    enough to casually order the events.
+    See the :ref:`guide-extending` guide for more information.
 
 - All events now include a ``pid`` field, which is the process id of the
   process that sent the event.
-
-- Events now supports timezones.
-
-    A new ``utcoffset`` field is now sent with every event.  This is a
-    signed integer telling the difference from UTC time in hours,
-    so e.g. an even sent from the Europe/London timezone in daylight savings
-    time will have an offset of 1.
-
-    :class:`@events.Receiver` will automatically convert the timestamps
-    to the destination timezone.
 
 - Event heartbeats are now calculated based on the time when the event
   was received by the monitor, and not the time reported by the worker.
@@ -276,6 +735,13 @@ In Other News
     time and the internal time is greater than 15 seconds, suggesting
     that the clocks are out of sync.
 
+- Monotonic clock support.
+
+    A monotonic clock is now used for timeouts and scheduling.
+
+    The monotonic clock function is built-in starting from Python 3.4,
+    but we also have fallback implementations for Linux and OS X.
+
 - :program:`celery worker` now supports a ``--detach`` argument to start
   the worker as a daemon in the background.
 
@@ -283,7 +749,7 @@ In Other News
   events, which is set to the time of when the event was received.
 
 - :class:`@events.Dispatcher` now accepts a ``groups`` argument
-  which decides a whitelist of event groups that will be sent.
+  which decides a white-list of event groups that will be sent.
 
     The type of an event is a string separated by '-', where the part
     before the first '-' is the group.  Currently there are only
@@ -298,9 +764,33 @@ In Other News
     will only send worker related events and silently drop any attempts
     to send events related to any other group.
 
+- New :setting:`BROKER_FAILOVER_STRATEGY` setting.
+
+    This setting can be used to change the transport failover strategy,
+    can either be a callable returning an iterable or the name of a
+    Kombu built-in failover strategy.  Default is "round-robin".
+
+    Contributed by Matt Wise.
+
+- ``Result.revoke`` will no longer wait for replies.
+
+    You can add the ``reply=True`` argument if you really want to wait for
+    responses from the workers.
+
 - Better support for link and link_error tasks for chords.
 
     Contributed by Steeve Morin.
+
+- Worker: Now emits warning if the :setting:`CELERYD_POOL` setting is set
+  to enable the eventlet/gevent pools.
+
+    The `-P` option should always be used to select the eventlet/gevent pool
+    to ensure that the patches are applied as early as possible.
+
+    If you start the worker in a wrapper (like Django's manage.py)
+    then you must apply the patches manually, e.g. by creating an alternative
+    wrapper that monkey patches at the start of the program before importing
+    any other modules.
 
 - There's a now an 'inspect clock' command which will collect the current
   logical clock value from workers.
@@ -323,45 +813,6 @@ In Other News
 
     Contributed by Mher Movisyan.
 
-
-- Now supports Setuptools extra requirements.
-
-    +-------------+-------------------------+---------------------------+
-    | Extension   | Requirement entry       | Type                      |
-    +=============+=========================+===========================+
-    | Redis       | ``celery[redis]``       | transport, result backend |
-    +-------------+-------------------------+---------------------------+
-    | MongoDB``   | ``celery[mongodb]``     | transport, result backend |
-    +-------------+-------------------------+---------------------------+
-    | CouchDB     | ``celery[couchdb]``     | transport                 |
-    +-------------+-------------------------+---------------------------+
-    | Beanstalk   | ``celery[beanstalk]``   | transport                 |
-    +-------------+-------------------------+---------------------------+
-    | ZeroMQ      | ``celery[zeromq]``      | transport                 |
-    +-------------+-------------------------+---------------------------+
-    | Zookeeper   | ``celery[zookeeper]``   | transport                 |
-    +-------------+-------------------------+---------------------------+
-    | SQLAlchemy  | ``celery[sqlalchemy]``  | transport, result backend |
-    +-------------+-------------------------+---------------------------+
-    | librabbitmq | ``celery[librabbitmq]`` | transport (C amqp client) |
-    +-------------+-------------------------+---------------------------+
-
-    Examples using :program:`pip install`:
-
-    .. code-block:: bash
-
-        pip install celery[redis]
-        pip install celery[librabbitmq]
-
-        pip install celery[redis,librabbitmq]
-
-        pip install celery[mongodb]
-        pip install celery[couchdb]
-        pip install celery[beanstalk]
-        pip install celery[zeromq]
-        pip install celery[zookeeper]
-        pip install celery[sqlalchemy]
-
 - New settings :setting:`CELERY_EVENT_QUEUE_TTL` and
   :setting:`CELERY_EVENT_QUEUE_EXPIRES`.
 
@@ -369,7 +820,7 @@ In Other News
     events published to that queue will be visible.  Only supported on
     RabbitMQ.
 
-- New Couchbase result backend
+- New Couchbase result backend.
 
     This result backend enables you to store and retrieve task results
     using `Couchbase`_.
@@ -381,7 +832,6 @@ In Other News
 
     .. _`Couchbase`: http://www.couchbase.com
 
-
 - CentOS init script now supports starting multiple worker instances.
 
     See the script header for details.
@@ -392,96 +842,7 @@ In Other News
 
     Fix contributed by Idan Kamara
 
-- Worker node names now consists of a name and a hostname separated by '@'.
-
-    This change is to more easily identify multiple instances running
-    on the same machine.
-
-    If a custom name is not specified then the
-    worker will use the name 'celery' in default, resulting in a
-    fully qualified node name of 'celery@hostname':
-
-    .. code-block:: bash
-
-        $ celery worker -n example.com
-        celery@example.com
-
-    To set the name you must include the @:
-
-    .. code-block:: bash
-
-        $ celery worker -n worker1@example.com
-        worker1@example.com
-
-    This also means that the worker will identify itself using the full
-    nodename in events and broadcast messages, so where before
-    a worker would identify as 'worker1.example.com', it will now
-    use 'celery@worker1.example.com'.
-
-    Remember that the ``-n`` argument also supports simple variable
-    substitutions, so if the current hostname is *jerry.example.com*
-    then ``%h`` will expand into that:
-
-    .. code-block:: bash
-
-        $ celery worker -n worker1@%h
-        worker1@jerry.example.com
-
-    The table of substitutions is as follows:
-
-    +---------------+---------------------------------------+
-    | Variable      | Substitution                          |
-    +===============+=======================================+
-    | ``%h``        | Full hostname (including domain name) |
-    +---------------+---------------------------------------+
-    | ``%d``        | Domain name only                      |
-    +---------------+---------------------------------------+
-    | ``%n``        | Hostname only (without domain name)   |
-    +---------------+---------------------------------------+
-    | ``%%``        | The character ``%``                   |
-    +---------------+---------------------------------------+
-
-- Task decorator can now create "bound tasks"
-
-    This means that the function will be a method in the resulting
-    task class and so will have a ``self`` argument that can be used
-    to refer to the current task:
-
-    .. code-block:: python
-
-        @app.task(bind=True)
-        def send_twitter_status(self, oauth, tweet):
-            try:
-                twitter = Twitter(oauth)
-                twitter.update_status(tweet)
-            except (Twitter.FailWhaleError, Twitter.LoginError) as exc:
-                raise self.retry(exc=exc)
-
-    Using *bound tasks* is now the recommended approach whenever
-    you need access to the current task or request context.
-    Previously one would have to refer to the name of the task
-    instead (``send_twitter_status.retry``), but this could lead to problems
-    in some instances where the registered task was no longer the same
-    object.
-
-- Workers now synchronizes revoked tasks with its neighbors.
-
-    This happens at startup and causes a one second startup delay
-    to collect broadcast responses from other workers.
-
-- Workers logical clock value is now persisted so that the clock
-  is not reset when a worker restarts.
-
-    The logical clock is also synchronized with other nodes
-    in the same cluster (neighbors), so this means that the logical
-    epoch will start at the point when the first worker in the cluster
-    starts.
-
-    You may notice that the logical clock is an integer value and increases
-    very rapidly. It will take several millennia before the clock overflows 64 bits,
-    so this is not a concern.
-
-- New setting :setting:`BROKER_LOGIN_METHOD`
+- New setting :setting:`BROKER_LOGIN_METHOD`.
 
     This setting can be used to specify an alternate login method
     for the AMQP transports.
@@ -491,34 +852,12 @@ In Other News
 - The ``dump_conf`` remote control command will now give the string
   representation for types that are not JSON compatible.
 
-- Calling a subtask will now execute the task directly as documented.
+- Function `celery.security.setup_security` is now :func:`@setup_security`.
 
-    A misunderstanding led to ``Signature.__call__`` being an alias of
-    ``.delay`` but this does not conform to the calling API of ``Task`` which
-    should call the underlying task method.
-
-    This means that:
-
-    .. code-block:: python
-
-        @app.task
-        def add(x, y):
-            return x + y
-
-        add.s(2, 2)()
-
-    does the same as calling the task directly:
-
-    .. code-block:: python
-
-        add(2, 2)
-
-- Function `celery.security.setup_security` is now :func:`celery.setup_security`.
-
-- Message expires value is now forwarded at retry (Issue #980).
+- Task retry now propagates the message expiry value (Issue #980).
 
     The value is forwarded at is, so the expiry time will not change.
-    To update the expiry time you would have to pass the expires
+    To update the expiry time you would have to pass a new expires
     argument to ``retry()``.
 
 - Worker now crashes if a channel error occurs.
@@ -548,6 +887,19 @@ In Other News
 
     Contributed by Ryan Petrello.
 
+- SQLAlchemy Result Backend: Now calls ``enginge.dispose`` after fork
+   (Issue #1564).
+
+    If you create your own sqlalchemy engines then you must also
+    make sure that these are closed after fork in the worker:
+
+    .. code-block:: python
+
+        from multiprocessing.util import register_after_fork
+
+        engine = create_engine(…)
+        register_after_fork(engine, engine.dispose)
+
 - A stress test suite for the Celery worker has been written.
 
     This is located in the ``funtests/stress`` directory in the git
@@ -555,7 +907,7 @@ In Other News
 
 - The logger named ``celery.concurrency`` has been renamed to ``celery.pool``.
 
-- New command line utility ``celery graph``
+- New command line utility ``celery graph``.
 
     This utility creates graphs in GraphViz dot format.
 
@@ -580,21 +932,20 @@ In Other News
         # Create graph from the current cluster
         $ celery graph workers | dot -T png -o workers.png
 
-
         # Create graph from a specified list of workers
         $ celery graph workers nodes:w1,w2,w3 | dot -T png workers.png
 
         # also specify the number of threads in each worker
         $ celery graph workers nodes:w1,w2,w3 threads:2,4,6
 
-        # ...also specify the broker and backend URLs shown in the graph
+        # …also specify the broker and backend URLs shown in the graph
         $ celery graph workers broker:amqp:// backend:redis://
 
-        # ...also specify the max number of workers/threads shown (wmax/tmax),
+        # …also specify the max number of workers/threads shown (wmax/tmax),
         # enumerating anything that exceeds that number.
         $ celery graph workers wmax:10 tmax:3
 
-- Changed the way that app instances are pickled
+- Changed the way that app instances are pickled.
 
     Apps can now define a ``__reduce_keys__`` method that is used instead
     of the old ``AppPickler`` attribute.  E.g. if your app defines a custom
@@ -604,7 +955,6 @@ In Other News
     .. code-block:: python
 
         import celery
-
 
         class Celery(celery.Celery):
 
@@ -634,38 +984,149 @@ In Other News
 
         $ C_IMPDEBUG=1 celery shell
 
+- Message headers now available as part of the task request.
 
-- :class:`celery.apps.worker.Worker` has been refactored as a subclass of
-  :class:`celery.worker.WorkController`.
+    Example adding and retrieving a header value:
 
-    This removes a lot of duplicate functionality.
+    .. code-block:: python
 
+        @app.task(bind=True)
+        def t(self):
+            return self.request.headers.get('sender')
 
-- :class:`@events.Receiver` is now a :class:`kombu.mixins.ConsumerMixin`
-  subclass.
+        >>> t.apply_async(headers={'sender': 'George Costanza'})
+
+- New :signal:`before_task_publish` signal dispatched before a task message
+  is sent and can be used to modify the final message fields (Issue #1281).
+
+- New :signal:`after_task_publish` signal replaces the old :signal:`task_sent`
+  signal.
+
+    The :signal:`task_sent` signal is now deprecated and should not be used.
+
+- New :signal:`worker_process_shutdown` signal is dispatched in the
+  prefork pool child processes as they exit.
+
+    Contributed by Daniel M Taub.
 
 - ``celery.platforms.PIDFile`` renamed to :class:`celery.platforms.Pidfile`.
 
-- ``celery.results.BaseDictBackend`` has been removed, replaced by
-  :class:``celery.results.BaseBackend``.
+- MongoDB Backend: Can now be configured using an URL:
 
+    See :ref:`example-mongodb-result-config`.
 
-.. _v310-experimental:
+- MongoDB Backend: No longer using deprecated ``pymongo.Connection``.
 
-Experimental
-============
+- MongoDB Backend: Now disables ``auto_start_request``.
 
-XXX
----
+- MongoDB Backend: Now enables ``use_greenlets`` when eventlet/gevent is used.
 
-YYY
+- ``subtask()`` / ``maybe_subtask()`` renamed to
+  ``signature()``/``maybe_signature()``.
+
+    Aliases still available for backwards compatibility.
+
+- The ``correlation_id`` message property is now automatically set to the
+  id of the task.
+
+- The task message ``eta`` and ``expires`` fields now includes timezone
+  information.
+
+- All result backends ``store_result``/``mark_as_*`` methods must now accept
+  a ``request`` keyword argument.
+
+- Events now emit warning if the broken ``yajl`` library is used.
+
+- The :signal:`celeryd_init` signal now takes an extra keyword argument:
+  ``option``.
+
+    This is the mapping of parsed command line arguments, and can be used to
+    prepare new preload arguments (``app.user_options['preload']``).
+
+- New callback: ``Celery.on_configure``.
+
+    This callback is called when an app is about to be configured (a
+    configuration key is required).
+
+- Worker: No longer forks on :sig:`HUP`.
+
+    This means that the worker will reuse the same pid for better
+    support with external process supervisors.
+
+    Contributed by Jameel Al-Aziz.
+
+- Worker: The log message ``Got task from broker …`` was changed to
+  ``Received task …``.
+
+- Worker: The log message ``Skipping revoked task …`` was changed
+  to ``Discarding revoked task …``.
+
+- Optimization: Improved performance of ``ResultSet.join_native()``.
+
+    Contributed by Stas Rudakou.
+
+- The :signal:`task_revoked` signal now accepts new ``request`` argument
+  (Issue #1555).
+
+    The revoked signal is dispatched after the task request is removed from
+    the stack, so it must instead use the :class:`~celery.worker.job.Request`
+    object to get information about the task.
+
+- Worker: New :option:`-X` command line argument to exclude queues
+  (Issue #1399).
+
+    The :option:`-X` argument is the inverse of the :option:`-Q` argument
+    and accepts a list of queues to exclude (not consume from):
+
+    .. code-block:: bash
+
+        # Consume from all queues in CELERY_QUEUES, but not the 'foo' queue.
+        $ celery worker -A proj -l info -X foo
+
+- Adds :envvar:`C_FAKEFORK` envvar for simple init script/multi debugging.
+
+    This means that you can now do:
+
+    .. code-block:: bash
+
+            $ C_FAKEFORK=1 celery multi start 10
+
+    or:
+
+    .. code-block:: bash
+
+        $ C_FAKEFORK=1 /etc/init.d/celeryd start
+
+    to avoid the daemonization step to see errors that are not visible
+    due to missing stdout/stderr.
+
+    A ``dryrun`` command has been added to the generic init script that
+    enables this option.
+
+- New public API to push and pop from the current task stack:
+
+    :func:`celery.app.push_current_task` and
+    :func:`celery.app.pop_current_task``.
+
+- ``RetryTaskError`` has been renamed to :exc:`~celery.exceptions.Retry`.
+
+    The old name is still available for backwards compatibility.
+
+- New semi-predicate exception :exc:`~celery.exceptions.Reject`.
+
+    This exception can be raised to ``reject``/``requeue`` the task message,
+    see :ref:`task-semipred-reject` for examples.
+
+- :ref:`Semipredicates <task-semipredicates>` documented: (Retry/Ignore/Reject).
+
 
 .. _v310-removals:
 
 Scheduled Removals
 ==================
 
-- The ``BROKER_INSIST`` setting is no longer supported.
+- The ``BROKER_INSIST`` setting and the ``insist`` argument
+  to ``~@connection`` is no longer supported.
 
 - The ``CELERY_AMQP_TASK_RESULT_CONNECTION_MAX`` setting is no longer
   supported.
@@ -696,19 +1157,16 @@ Scheduled Removals
                 }
             }
 
-- The ``CELERY_AMQP_TASK_RESULT_EXPIRES`` setting is no longer supported.
-
-    Use :setting:`CELERY_TASK_RESULT_EXPIRES` instead.
-
-- Functions that establishes broker connections no longer
+- Functions that creates a broker connections no longer
   supports the ``connect_timeout`` argument.
 
     This can now only be set using the :setting:`BROKER_CONNECTION_TIMEOUT`
-    setting.  This is because function rarely establish connections directly,
-    but instead acquire connections from the connection pool.
+    setting.  This is because functions no longer create connections
+    directly, but instead get them from the connection pool.
 
-- The ``Celery.with_default_connection`` method has been removed in favor
-  of ``with app.connection_or_acquire``.
+- The ``CELERY_AMQP_TASK_RESULT_EXPIRES`` setting is no longer supported.
+
+    Use :setting:`CELERY_TASK_RESULT_EXPIRES` instead.
 
 .. _v310-deprecations:
 
@@ -717,24 +1175,57 @@ Deprecations
 
 See the :ref:`deprecation-timeline`.
 
-- XXX
-
-    YYY
-
-
 .. _v310-fixes:
 
 Fixes
 =====
 
-- XXX
+- AMQP Backend: join did not convert exceptions when using the json
+  serializer.
 
-.. _v310-internal
+- Non-abstract task classes are now shared between apps (Issue #1150).
+
+    Note that non-abstract task classes should not be used in the
+    new API.  You should only create custom task classes when you
+    use them as a base class in the ``@task`` decorator.
+
+    This fix ensure backwards compatibility with older Celery versions
+    so that non-abstract task classes works even if a module is imported
+    multiple times so that the app is also instantiated multiple times.
+
+- Worker: Workaround for Unicode errors in logs (Issue #427).
+
+- Task methods: ``.apply_async`` now works properly if args list is None
+  (Issue #1459).
+
+- Eventlet/gevent/solo/threads pools now properly handles :exc:`BaseException`
+  errors raised by tasks.
+
+- Autoscale and ``pool_grow``/``pool_shrink`` remote control commands
+  will now also automatically increase and decrease the consumer prefetch count.
+
+    Fix contributed by Daniel M. Taub.
+
+- ``celery control pool_`` commands did not coerce string arguments to int.
+
+- Redis/Cache chords: Callback result is now set to failure if the group
+  disappeared from the database (Issue #1094).
+
+- Worker: Now makes sure that the shutdown process is not initiated multiple
+  times.
+
+- Multi: Now properly handles both ``-f`` and ``--logfile`` options
+  (Issue #1541).
+
+.. _v310-internal:
 
 Internal changes
 ================
 
 - Module ``celery.task.trace`` has been renamed to :mod:`celery.app.trace`.
+
+- Module ``celery.concurrency.processes`` has been renamed to
+  :mod:`celery.concurrency.prefork`.
 
 - Classes that no longer fall back to using the default app:
 
@@ -746,8 +1237,22 @@ Internal changes
     This means that you have to pass a specific app when instantiating
     these classes.
 
-- ``EventDispatcher.copy_buffer`` renamed to ``EventDispatcher.extend_buffer``
+- ``EventDispatcher.copy_buffer`` renamed to
+  :meth:`@events.Dispatcher.extend_buffer`.
 
 - Removed unused and never documented global instance
   ``celery.events.state.state``.
 
+- :class:`@events.Receiver` is now a :class:`kombu.mixins.ConsumerMixin`
+  subclass.
+
+- :class:`celery.apps.worker.Worker` has been refactored as a subclass of
+  :class:`celery.worker.WorkController`.
+
+    This removes a lot of duplicate functionality.
+
+- The ``Celery.with_default_connection`` method has been removed in favor
+  of ``with app.connection_or_acquire``.
+
+- The ``celery.results.BaseDictBackend`` class has been removed and is replaced by
+  :class:`celery.results.BaseBackend`.

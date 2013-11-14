@@ -135,7 +135,7 @@ Attributes
 
 .. attribute:: hub
 
-    Event loop object (:class:`~celery.worker.hub.Hub`).  You can use
+    Event loop object (:class:`~kombu.async.Hub`).  You can use
     this to register callbacks in the event loop.
 
     This is only supported by async I/O enabled transports (amqp, redis),
@@ -152,7 +152,7 @@ Attributes
 
 .. attribute:: timer
 
-    :class:`Timer <celery.utils.timer2.Schedule` used to schedule functions.
+    :class:`~kombu.async.timer.Timer` used to schedule functions.
 
     Your bootstep must require the Timer bootstep to use this.
 
@@ -230,8 +230,8 @@ Another example could use the timer to wake up at regular intervals:
 
         def start(self, worker):
             # run every 30 seconds.
-            self.tref = worker.timer.apply_interval(
-                30000.0, self.detect, (worker, ),
+            self.tref = worker.timer.call_repeatedly(
+                30.0, self.detect, (worker, ), priority=10,
             )
 
         def stop(self, worker):
@@ -279,7 +279,7 @@ Attributes
 
 .. attribute:: hub
 
-    Event loop object (:class:`~celery.worker.hub.Hub`).  You can use
+    Event loop object (:class:`~kombu.async.Hub`).  You can use
     this to register callbacks in the event loop.
 
     This is only supported by async I/O enabled transports (amqp, redis),
@@ -456,15 +456,15 @@ It can be added both as a worker and consumer bootstep:
 Starting the worker with this step installed will give us the following
 logs::
 
-    <celery.apps.worker.Worker object at 0x101ad8410> is in init
-    <celery.worker.consumer.Consumer object at 0x101c2d790> is in init
+    <Worker: w@example.com (initializing)> is in init
+    <Consumer: w@example.com (initializing)> is in init
     [2013-05-29 16:18:20,544: WARNING/MainProcess]
-        <celery.apps.worker.Worker object at 0x101ad8410> is starting
+        <Worker: w@example.com (running)> is starting
     [2013-05-29 16:18:21,577: WARNING/MainProcess]
-        <celery.worker.consumer.Consumer object at 0x101c2d8d0> is starting
-    <celery.worker.consumer.Consumer object at 0x101c2d790> is stopping
-    <celery.apps.worker.Worker object at 0x101ad8410> is stopping
-    <celery.worker.consumer.Consumer object at 0x101c2d790> is shutting down
+        <Consumer: w@example.com (running)> is starting
+    <Consumer: w@example.com (closing)> is stopping
+    <Worker: w@example.com (closing)> is stopping
+    <Consumer: w@example.com (terminating)> is shutting down
 
 The ``print`` statements will be redirected to the logging subsystem after
 the worker has been initialized, so the "is starting" lines are timestamped.
@@ -550,7 +550,7 @@ Example adding a custom option to the :program:`celery worker` command:
 .. code-block:: python
 
     from celery import Celery
-    from optparse import make_option as Option
+    from celery.bin import Option
 
     app = Celery(broker='amqp://')
 
@@ -629,8 +629,8 @@ Worker API
 ==========
 
 
-:class:`~celery.worker.Hub` - The workers async event loop.
------------------------------------------------------------
+:class:`~kombu.async.Hub` - The workers async event loop.
+---------------------------------------------------------
 :supported transports: amqp, redis
 
 .. versionadded:: 3.0
@@ -641,11 +641,10 @@ will take some time so other transports still use a threading-based solution.
 
 .. method:: hub.add(fd, callback, flags)
 
-    Add callback for fd with custom flags, which can be any combination of
-    :data:`~kombu.utils.eventio.READ`, :data:`~kombu.utils.eventio.WRITE`,
-    and :data:`~kombu.utils.eventio.ERR`, the callback will then be called
-    whenever the condition specified in flags is true (readable,
-    writeable, or error).
+
+.. method:: hub.add_reader(fd, callback, \*args)
+
+    Add callback to be called when ``fd`` is readable.
 
     The callback will stay registered until explictly removed using
     :meth:`hub.remove(fd) <hub.remove>`, or the fd is automatically discarded
@@ -655,41 +654,26 @@ will take some time so other transports still use a threading-based solution.
     so calling ``add`` a second time will remove any callback that
     was previously registered for that fd.
 
-    ``fd`` may also be a list of file descriptors, in this case the
-    callback will be registered for all of the fds in this list.
-
     A file descriptor is any file-like object that supports the ``fileno``
     method, or it can be the file descriptor number (int).
 
-.. method:: hub.add_reader(fd, callback)
+.. method:: hub.add_writer(fd, callback, \*args)
 
-    Shortcut to ``hub.add(fd, callback, READ | ERR)``.
-
-.. method:: hub.add_writer(fd, callback)
-
-    Shortcut to ``hub.add(fd, callback, WRITE)``.
+    Add callback to be called when ``fd`` is writable.
+    See also notes for :meth:`hub.add_reader` above.
 
 .. method:: hub.remove(fd)
 
     Remove all callbacks for ``fd`` from the loop.
 
-.. method:: hub.update_readers(fd, mapping)
-
-    Shortcut to add callbacks from a map of ``{fd: callback}`` items.
-
-.. method:: hub.update_writers(fd, mapping)
-
-    Shortcut to add callbacks from a map of ``{fd: callback}`` items.
-
 Timer - Scheduling events
 -------------------------
 
-.. method:: timer.apply_after(msecs, callback, args=(), kwargs=(),
-                              priority=0)
+.. method:: timer.call_after(secs, callback, args=(), kwargs=(),
+                             priority=0)
 
+.. method:: timer.call_repeatedly(secs, callback, args=(), kwargs=(),
+                                  priority=0)
 
-.. method:: timer.apply_interval(msecs, callback, args=(), kwargs=(),
-                                priority=0)
-
-.. method:: timer.apply_at(eta, callback, args=(), kwargs=(),
-                           priority=0)
+.. method:: timer.call_at(eta, callback, args=(), kwargs=(),
+                          priority=0)

@@ -33,7 +33,7 @@ from kombu.utils.limits import TokenBucket
 
 from celery import bootsteps
 from celery.app.trace import build_tracer
-from celery.canvas import subtask
+from celery.canvas import signature
 from celery.exceptions import InvalidTaskError
 from celery.five import items, values
 from celery.utils.functional import noop
@@ -161,11 +161,12 @@ class Consumer(object):
         def shutdown(self, parent):
             self.send_all(parent, 'shutdown')
 
-    def __init__(self, on_task,
+    def __init__(self, on_task_request,
                  init_callback=noop, hostname=None,
                  pool=None, app=None,
                  timer=None, controller=None, hub=None, amqheartbeat=None,
-                 worker_options=None, disable_rate_limits=False, **kwargs):
+                 worker_options=None, disable_rate_limits=False,
+                 initial_prefetch_count=2, prefetch_multiplier=1, **kwargs):
         self.app = app
         self.controller = controller
         self.init_callback = init_callback
@@ -180,9 +181,12 @@ class Consumer(object):
         self._restart_state = restart_state(maxR=5, maxT=1)
 
         self._does_info = logger.isEnabledFor(logging.INFO)
-        self.on_task = on_task
+        self.on_task_request = on_task_request
+        self.on_task_message = set()
         self.amqheartbeat_rate = self.app.conf.BROKER_HEARTBEAT_CHECKRATE
         self.disable_rate_limits = disable_rate_limits
+        self.initial_prefetch_count = initial_prefetch_count
+        self.prefetch_multiplier = prefetch_multiplier
 
         # this contains a tokenbucket for each task type by name, used for
         # rate limits, or None if rate limits are disabled for that task.
@@ -194,7 +198,6 @@ class Consumer(object):
             if self.amqheartbeat is None:
                 self.amqheartbeat = self.app.conf.BROKER_HEARTBEAT
             self.hub = hub
-            self.hub.on_init.append(self.on_poll_init)
         else:
             self.hub = None
             self.amqheartbeat = 0
@@ -223,15 +226,41 @@ class Consumer(object):
             (n, self.bucket_for_task(t)) for n, t in items(self.app.tasks)
         )
 
+    def _update_prefetch_count(self, index=0):
+        """Update prefetch count after pool/shrink grow operations.
+
+        Index must be the change in number of processes as a postive
+        (increasing) or negative (decreasing) number.
+
+        .. note::
+
+            Currently pool grow operations will end up with an offset
+            of +1 if the initial size of the pool was 0 (e.g.
+            ``--autoscale=1,0``).
+
+        """
+        num_processes = self.pool.num_processes
+        if not self.initial_prefetch_count or not num_processes:
+            return  # prefetch disabled
+        self.initial_prefetch_count = (
+            self.pool.num_processes * self.prefetch_multiplier
+        )
+        return self._update_qos_eventually(index)
+
+    def _update_qos_eventually(self, index):
+        return (self.qos.decrement_eventually if index < 0
+                else self.qos.increment_eventually)(
+            abs(index) * self.prefetch_multiplier)
+
     def _limit_task(self, request, bucket, tokens):
         if not bucket.can_consume(tokens):
             hold = bucket.expected_time(tokens)
-            self.timer.apply_after(
-                hold * 1000.0, self._limit_task, (request, bucket, tokens),
+            self.timer.call_after(
+                hold, self._limit_task, (request, bucket, tokens),
             )
         else:
             task_reserved(request)
-            self.on_task(request)
+            self.on_task_request(request)
 
     def start(self):
         blueprint, loop = self.blueprint, self.loop
@@ -258,6 +287,9 @@ class Consumer(object):
                     self.on_close()
                     blueprint.restart(self)
 
+    def register_with_event_loop(self, hub):
+        self.blueprint.send_all(self, 'register_with_event_loop', args=(hub, ))
+
     def shutdown(self):
         self.in_shutdown = True
         self.blueprint.shutdown(self)
@@ -274,10 +306,6 @@ class Consumer(object):
         return (self, self.connection, self.task_consumer,
                 self.blueprint, self.hub, self.qos, self.amqheartbeat,
                 self.app.clock, self.amqheartbeat_rate)
-
-    def on_poll_init(self, hub):
-        hub.update_readers(self.connection.eventmap)
-        self.connection.transport.on_poll_init(hub.poller)
 
     def on_decode_error(self, message, exc):
         """Callback called if an error occurs while decoding
@@ -304,7 +332,7 @@ class Consumer(object):
         if self.timer:
             self.timer.clear()
         reserved_requests.clear()
-        if self.pool:
+        if self.pool and self.pool.flush:
             self.pool.flush()
 
     def connect(self):
@@ -325,16 +353,19 @@ class Consumer(object):
                   next_step.format(when=humanize_seconds(interval, 'in', ' ')))
 
         # remember that the connection is lazy, it won't establish
-        # until it's needed.
+        # until needed.
         if not self.app.conf.BROKER_CONNECTION_RETRY:
             # retry disabled, just call connect directly.
             conn.connect()
             return conn
 
-        return conn.ensure_connection(
+        conn = conn.ensure_connection(
             _error_handler, self.app.conf.BROKER_CONNECTION_MAX_RETRIES,
             callback=maybe_shutdown,
         )
+        if self.hub:
+            conn.transport.register_with_event_loop(conn.connection, self.hub)
+        return conn
 
     def add_task_queue(self, queue, exchange=None, exchange_type=None,
                        routing_key=None, **options):
@@ -359,14 +390,14 @@ class Consumer(object):
             info('Started consuming from %r', queue)
 
     def cancel_task_queue(self, queue):
-        self.app.amqp.queues.select_remove(queue)
+        self.app.amqp.queues.deselect(queue)
         self.task_consumer.cancel_by_queue(queue)
 
     def apply_eta_task(self, task):
         """Method called by the timer to apply a task with an
         ETA/countdown."""
         task_reserved(task)
-        self.on_task(task)
+        self.on_task_request(task)
         self.qos.decrement_eventually()
 
     def _message_report(self, body, message):
@@ -394,28 +425,35 @@ class Consumer(object):
             task.__trace__ = build_tracer(name, task, loader, self.hostname,
                                           app=self.app)
 
-    def create_task_handler(self, callbacks):
+    def create_task_handler(self):
         strategies = self.strategies
         on_unknown_message = self.on_unknown_message
         on_unknown_task = self.on_unknown_task
         on_invalid_task = self.on_invalid_task
+        callbacks = self.on_task_message
 
         def on_task_received(body, message):
-            if callbacks:
-                [callback() for callback in callbacks]
             try:
                 name = body['task']
             except (KeyError, TypeError):
                 return on_unknown_message(body, message)
 
             try:
-                strategies[name](message, body, message.ack_log_error)
+                strategies[name](message, body,
+                                 message.ack_log_error,
+                                 message.reject_log_error,
+                                 callbacks)
             except KeyError as exc:
                 on_unknown_task(body, message, exc)
             except InvalidTaskError as exc:
                 on_invalid_task(body, message, exc)
 
         return on_task_received
+
+    def __repr__(self):
+        return '<Consumer: {self.hostname} ({state})>'.format(
+            self=self, state=self.blueprint.human_state(),
+        )
 
 
 class Connection(bootsteps.StartStopStep):
@@ -449,10 +487,10 @@ class Events(bootsteps.StartStopStep):
         c.event_dispatcher = None
 
     def start(self, c):
-        # Flush events sent while connection was down.
+        # flush events sent while connection was down.
         prev = c.event_dispatcher
         dis = c.event_dispatcher = c.app.events.Dispatcher(
-            c.connection, hostname=c.hostname,
+            c.connect(), hostname=c.hostname,
             enabled=self.send_events, groups=self.groups,
         )
         if prev:
@@ -461,6 +499,12 @@ class Events(bootsteps.StartStopStep):
 
     def stop(self, c):
         if c.event_dispatcher:
+            # remember changes from remote control commands:
+            self.groups = c.event_dispatcher.groups
+
+            # close custom connection
+            if c.event_dispatcher.connection:
+                ignore_errors(c, c.event_dispatcher.connection.close)
             ignore_errors(c, c.event_dispatcher.close)
             c.event_dispatcher = None
     shutdown = stop
@@ -469,8 +513,8 @@ class Events(bootsteps.StartStopStep):
 class Heart(bootsteps.StartStopStep):
     requires = (Events, )
 
-    def __init__(self, c, enable_heartbeat=True, **kwargs):
-        self.enabled = enable_heartbeat
+    def __init__(self, c, without_heartbeat=False, **kwargs):
+        self.enabled = not without_heartbeat
         c.heart = None
 
     def start(self, c):
@@ -499,16 +543,15 @@ class Control(bootsteps.StartStopStep):
 class Tasks(bootsteps.StartStopStep):
     requires = (Events, )
 
-    def __init__(self, c, initial_prefetch_count=2, **kwargs):
+    def __init__(self, c, **kwargs):
         c.task_consumer = c.qos = None
-        self.initial_prefetch_count = initial_prefetch_count
 
     def start(self, c):
         c.update_strategies()
         c.task_consumer = c.app.amqp.TaskConsumer(
             c.connection, on_decode_error=c.on_decode_error,
         )
-        c.qos = QoS(c.task_consumer.qos, self.initial_prefetch_count)
+        c.qos = QoS(c.task_consumer.qos, c.initial_prefetch_count)
         c.qos.update()  # set initial prefetch count
 
     def stop(self, c):
@@ -539,31 +582,6 @@ class Agent(bootsteps.StartStopStep):
         return agent
 
 
-class Mingle(bootsteps.StartStopStep):
-    label = 'Mingle'
-    requires = (Connection, )
-
-    def __init__(self, c, enable_mingle=True, **kwargs):
-        self.enabled = enable_mingle
-
-    def start(self, c):
-        info('mingle: searching for neighbors')
-        I = c.app.control.inspect(timeout=1.0, connection=c.connection)
-        replies = I.hello()
-        if replies:
-            for reply in values(replies):
-                try:
-                    other_clock, other_revoked = MINGLE_GET_FIELDS(reply)
-                except KeyError:  # reply from pre-3.1 worker
-                    pass
-                else:
-                    c.app.clock.adjust(other_clock)
-                    revoked.update(other_revoked)
-            info('mingle: synced with %s', ', '.join(replies))
-        else:
-            info('mingle: no one here')
-
-
 class Gossip(bootsteps.ConsumerStep):
     label = 'Gossip'
     requires = (Events, )
@@ -571,8 +589,8 @@ class Gossip(bootsteps.ConsumerStep):
         'id', 'clock', 'hostname', 'pid', 'topic', 'action', 'cver',
     )
 
-    def __init__(self, c, enable_gossip=True, interval=5.0, **kwargs):
-        self.enabled = enable_gossip
+    def __init__(self, c, without_gossip=False, interval=5.0, **kwargs):
+        self.enabled = not without_gossip
         self.app = c.app
         c.gossip = self
         self.Receiver = c.app.events.Receiver
@@ -605,8 +623,7 @@ class Gossip(bootsteps.ConsumerStep):
 
     def call_task(self, task):
         try:
-            X = subtask(task)
-            X.apply_async()
+            signature(task, app=self.app).apply_async()
         except Exception as exc:
             error('Could not call task: %r', exc, exc_info=1)
 
@@ -664,9 +681,7 @@ class Gossip(bootsteps.ConsumerStep):
     def register_timer(self):
         if self._tref is not None:
             self._tref.cancel()
-        self._tref = self.timer.apply_interval(
-            self.interval * 1000.0, self.periodic,
-        )
+        self._tref = self.timer.call_repeatedly(self.interval, self.periodic)
 
     def periodic(self):
         workers = self.state.workers
@@ -712,6 +727,34 @@ class Gossip(bootsteps.ConsumerStep):
                 self.on_node_join(worker)
         else:
             self.clock.forward()
+
+
+class Mingle(bootsteps.StartStopStep):
+    label = 'Mingle'
+    requires = (Gossip, )
+
+    def __init__(self, c, without_mingle=False, **kwargs):
+        self.enabled = not without_mingle
+
+    def start(self, c):
+        info('mingle: searching for neighbors')
+        I = c.app.control.inspect(timeout=1.0, connection=c.connection)
+        replies = I.hello(c.hostname, revoked._data) or {}
+        replies.pop(c.hostname, None)
+        if replies:
+            info('mingle: hello %s! sync with me',
+                 ', '.join(reply for reply, value in items(replies) if value))
+            for reply in values(replies):
+                if reply:
+                    try:
+                        other_clock, other_revoked = MINGLE_GET_FIELDS(reply)
+                    except KeyError:  # reply from pre-3.1 worker
+                        pass
+                    else:
+                        c.app.clock.adjust(other_clock)
+                        revoked.update(other_revoked)
+        else:
+            info('mingle: all alone')
 
 
 class Evloop(bootsteps.StartStopStep):

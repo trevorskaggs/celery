@@ -96,7 +96,7 @@ When the worker starts you should see a banner and some messages::
 module, you can also specify a different broker on the command-line by using
 the :option:`-b` option.
 
--- *Concurrency* is the number of multiprocessing worker process used
+-- *Concurrency* is the number of prefork worker process used
 to process your tasks concurrently, when all of these are busy doing work
 new tasks will have to wait for one of the tasks to finish before
 it can be processed.
@@ -109,7 +109,7 @@ it, experimentation has shown that adding more than twice the number
 of CPU's is rarely effective, and likely to degrade performance
 instead.
 
-Including the default multiprocessing pool, Celery also supports using
+Including the default prefork pool, Celery also supports using
 Eventlet, Gevent, and threads (see :ref:`concurrency`).
 
 -- *Events* is an option that when enabled causes Celery to send
@@ -152,7 +152,7 @@ start one or more workers in the background:
 .. code-block:: bash
 
     $ celery multi start w1 -A proj -l info
-    celery multi v3.1.0 (Cipater)
+    celery multi v3.1.1 (Cipater)
     > Starting nodes...
         > w1.halcyon.local: OK
 
@@ -161,13 +161,13 @@ You can restart it too:
 .. code-block:: bash
 
     $ celery multi restart w1 -A proj -l info
-    celery multi v3.1.0 (Cipater)
+    celery multi v3.1.1 (Cipater)
     > Stopping nodes...
         > w1.halcyon.local: TERM -> 64024
     > Waiting for 1 node.....
         > w1.halcyon.local: OK
     > Restarting node w1.halcyon.local: OK
-    celery multi v3.1.0 (Cipater)
+    celery multi v3.1.1 (Cipater)
     > Stopping nodes...
         > w1.halcyon.local: TERM -> 64052
 
@@ -221,18 +221,28 @@ About the :option:`--app` argument
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 The :option:`--app` argument specifies the Celery app instance to use,
-it must be in the form of ``module.path:celery``, where the part before the colon
-is the name of the module, and the attribute name comes last.
-If a package name is specified instead it will automatically
-try to find a ``celery`` module in that package, and if the name
-is a module it will try to find an app in that module.
-This means that these are all equal:
+it must be in the form of ``module.path:attribute``
 
-.. code-block:: bash
+But it also supports a shortcut form If only a package name is specified,
+where it'll try to search for the app instance, in the following order:
 
-    $ celery --app=proj
-    $ celery --app=proj.celery:
-    $ celery --app=proj.celery:app
+With ``--app=proj``:
+
+1) an attribute named ``proj.app``, or
+2) an attribute named ``proj.celery``, or
+3) any attribute in the module ``proj`` where the value is a Celery
+   application, or
+
+If none of these are found it'll try a submodule named ``proj.celery``:
+
+4) an attribute named ``proj.celery.app``, or
+5) an attribute named ``proj.celery.celery``, or
+6) Any atribute in the module ``proj.celery`` where the value is a Celery
+   application.
+
+This scheme mimics the practices used in the documentation,
+i.e. ``proj:app`` for a single contained module, and ``proj.celery:app``
+for larger projects.
 
 
 .. _calling-tasks:
@@ -387,8 +397,8 @@ There is also a shortcut using star arguments::
     >>> add.s(2, 2)
     tasks.add(2, 2)
 
-And there's that calling API again...
--------------------------------------
+And there's that calling API again…
+-----------------------------------
 
 Subtask instances also supports the calling API, which means that they
 have the ``delay`` and ``apply_async`` methods.
@@ -439,7 +449,7 @@ As stated subtasks supports the calling API, which means that:
   existing keys.
 
 So this all seems very useful, but what can you actually do with these?
-To get to that I must introduce the canvas primitives...
+To get to that I must introduce the canvas primitives…
 
 The Primitives
 --------------
@@ -618,7 +628,7 @@ list of worker host names:
 
 .. code-block:: bash
 
-    $ celery -A proj inspect active --destination=worker1.example.com
+    $ celery -A proj inspect active --destination=celery@example.com
 
 If a destination is not provided then every worker will act and reply
 to the request.

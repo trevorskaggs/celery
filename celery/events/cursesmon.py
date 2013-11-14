@@ -11,11 +11,11 @@ from __future__ import absolute_import, print_function
 import curses
 import sys
 import threading
-import time
 
 from datetime import datetime
 from itertools import count
 from textwrap import wrap
+from time import time
 from math import ceil
 
 from celery import VERSION_BANNER
@@ -334,7 +334,7 @@ class CursesMonitor(object):  # pragma: no cover
         if task.uuid == self.selected_task:
             attr = curses.A_STANDOUT
         timestamp = datetime.utcfromtimestamp(
-            task.timestamp or time.time(),
+            task.timestamp or time(),
         )
         timef = timestamp.strftime('%H:%M:%S')
         hostname = task.worker.hostname if task.worker else '*NONE*'

@@ -18,7 +18,7 @@ The :program:`celery worker` command (previously known as ``celeryd``)
 
     Pool implementation:
 
-    processes (default), eventlet, gevent, solo or threads.
+    prefork (default), eventlet, gevent, solo or threads.
 
 .. cmdoption:: -f, --logfile
 
@@ -56,6 +56,10 @@ The :program:`celery worker` command (previously known as ``celeryd``)
     Defaults to `celerybeat-schedule`. The extension ".db" may be
     appended to the filename.
 
+.. cmdoption:: -O
+
+    Apply optimization profile.  Supported: default, fair
+
 .. cmdoption:: --scheduler
 
     Scheduler class to use. Default is celery.beat.PersistentScheduler
@@ -69,6 +73,18 @@ The :program:`celery worker` command (previously known as ``celeryd``)
 
     Send events that can be captured by monitors like :program:`celery events`,
     `celerymon`, and others.
+
+.. cmdoption:: --without-gossip
+
+    Do not subscribe to other workers events.
+
+.. cmdoption:: --without-mingle
+
+    Do not synchronize with other workers at startup.
+
+.. cmdoption:: --without-heartbeat
+
+    Do not send event heartbeats.
 
 .. cmdoption:: --purge
 
@@ -159,7 +175,7 @@ class worker(Command):
     def maybe_detach(self, argv, dopts=['-D', '--detach']):
         if any(arg in argv for arg in dopts):
             argv = [v for v in argv if v not in dopts]
-            # never returns
+            # will never return
             detached_celeryd(self.app).execute_from_commandline(argv)
             raise SystemExit(0)
 
@@ -214,10 +230,15 @@ class worker(Command):
             Option('--maxtasksperchild', dest='max_tasks_per_child',
                    default=conf.CELERYD_MAX_TASKS_PER_CHILD, type='int'),
             Option('--queues', '-Q', default=[]),
+            Option('--exclude-queues', '-X', default=[]),
             Option('--include', '-I', default=[]),
             Option('--autoscale'),
             Option('--autoreload', action='store_true'),
             Option('--no-execv', action='store_true', default=False),
+            Option('--without-gossip', action='store_true', default=False),
+            Option('--without-mingle', action='store_true', default=False),
+            Option('--without-heartbeat', action='store_true', default=False),
+            Option('-O', dest='optimization'),
             Option('-D', '--detach', action='store_true'),
         ) + daemon_options() + tuple(self.app.user_options['worker'])
 

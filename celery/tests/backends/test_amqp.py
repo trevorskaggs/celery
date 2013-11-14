@@ -8,7 +8,6 @@ from datetime import timedelta
 from pickle import dumps, loads
 
 from billiard.einfo import ExceptionInfo
-from mock import patch
 
 from celery import states
 from celery.backends.amqp import AMQPBackend
@@ -17,7 +16,7 @@ from celery.five import Empty, Queue, range
 from celery.utils import uuid
 
 from celery.tests.case import (
-    AppCase, Mock, depends_on_current_app, sleepdeprived,
+    AppCase, Mock, depends_on_current_app, patch, sleepdeprived,
 )
 
 
@@ -30,7 +29,7 @@ class SomeClass(object):
 class test_AMQPBackend(AppCase):
 
     def create_backend(self, **opts):
-        opts = dict(dict(serializer='pickle', persistent=False), **opts)
+        opts = dict(dict(serializer='pickle', persistent=True), **opts)
         return AMQPBackend(self.app, **opts)
 
     def test_mark_as_done(self):

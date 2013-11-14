@@ -1,6 +1,5 @@
 from __future__ import absolute_import
 
-from mock import Mock, patch
 from time import time
 
 from celery.events.dumper import (
@@ -9,7 +8,7 @@ from celery.events.dumper import (
     evdump,
 )
 
-from celery.tests.case import AppCase, WhateverIO
+from celery.tests.case import AppCase, Mock, WhateverIO, patch
 
 
 class test_Dumper(AppCase):
@@ -24,12 +23,12 @@ class test_Dumper(AppCase):
 
     def test_format_task_event(self):
         self.dumper.format_task_event(
-            'worker.example.com', time(), 'task-started', 'tasks.add', {})
+            'worker@example.com', time(), 'task-started', 'tasks.add', {})
         self.assertTrue(self.out.getvalue())
 
     def test_on_event(self):
         event = {
-            'hostname': 'worker.example.com',
+            'hostname': 'worker@example.com',
             'timestamp': time(),
             'uuid': '1ef',
             'name': 'tasks.add',

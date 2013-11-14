@@ -10,10 +10,10 @@ from __future__ import absolute_import
 
 import logging
 
+from kombu.async.timer import to_timestamp
 from kombu.utils.encoding import safe_repr
 
 from celery.utils.log import get_logger
-from celery.utils.timer2 import to_timestamp
 from celery.utils.timeutils import timezone
 
 from .job import Request
@@ -34,23 +34,25 @@ def default(task, app, consumer,
     _does_info = logger.isEnabledFor(logging.INFO)
     events = eventer and eventer.enabled
     send_event = eventer.send
-    timer_apply_at = consumer.timer.apply_at
+    call_at = consumer.timer.call_at
     apply_eta_task = consumer.apply_eta_task
     rate_limits_enabled = not consumer.disable_rate_limits
     bucket = consumer.task_buckets[task.name]
-    handle = consumer.on_task
+    handle = consumer.on_task_request
     limit_task = consumer._limit_task
 
-    def task_message_handler(message, body, ack, to_timestamp=to_timestamp):
-        req = Req(body, on_ack=ack, app=app, hostname=hostname,
+    def task_message_handler(message, body, ack, reject, callbacks,
+                             to_timestamp=to_timestamp):
+        req = Req(body, on_ack=ack, on_reject=reject,
+                  app=app, hostname=hostname,
                   eventer=eventer, task=task,
                   connection_errors=connection_errors,
-                  delivery_info=message.delivery_info)
+                  message=message)
         if req.revoked():
             return
 
         if _does_info:
-            info('Got task from broker: %s', req)
+            info('Received task: %s', req)
 
         if events:
             send_event(
@@ -74,14 +76,14 @@ def default(task, app, consumer,
                 req.acknowledge()
             else:
                 consumer.qos.increment_eventually()
-                timer_apply_at(
-                    eta, apply_eta_task, (req, ), priority=6,
-                )
+                call_at(eta, apply_eta_task, (req, ), priority=6)
         else:
             if rate_limits_enabled:
                 if bucket:
                     return limit_task(req, bucket, 1)
             task_reserved(req)
+            if callbacks:
+                [callback() for callback in callbacks]
             handle(req)
 
     return task_message_handler

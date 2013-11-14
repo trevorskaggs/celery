@@ -31,7 +31,7 @@ except NameError:  # pragma: no cover
 
 
 def subclass_exception(name, parent, module):  # noqa
-    return type(name, (parent,), {'__module__': module})
+    return type(name, (parent, ), {'__module__': module})
 
 
 def find_pickleable_exception(exc, loads=pickle.loads,
@@ -44,8 +44,9 @@ def find_pickleable_exception(exc, loads=pickle.loads,
 
     :param exc: An exception instance.
 
-    :returns: the nearest exception if it's not :exc:`Exception` or below,
-              if it is it returns :const:`None`.
+    Will return the nearest pickleable parent exception class
+    (except :exc:`Exception` and parents), or if the exception is
+    pickleable it will return :const:`None`.
 
     :rtype :exc:`Exception`:
 
@@ -84,13 +85,16 @@ class UnpickleableExceptionWrapper(Exception):
 
     .. code-block:: python
 
-        >>> try:
-        ...     something_raising_unpickleable_exc()
-        >>> except Exception as e:
-        ...     exc = UnpickleableException(e.__class__.__module__,
-        ...                                 e.__class__.__name__,
-        ...                                 e.args)
-        ...     pickle.dumps(exc) # Works fine.
+        >>> def pickle_it(raising_function):
+        ...     try:
+        ...         raising_function()
+        ...     except Exception as e:
+        ...         exc = UnpickleableExceptionWrapper(
+        ...             e.__class__.__module__,
+        ...             e.__class__.__name__,
+        ...             e.args,
+        ...         )
+        ...         pickle.dumps(exc)  # Works fine.
 
     """
 
@@ -151,6 +155,8 @@ def get_pickleable_etype(cls, loads=pickle.loads, dumps=pickle.dumps):
         loads(dumps(cls))
     except:
         return Exception
+    else:
+        return cls
 
 
 def get_pickled_exception(exc):

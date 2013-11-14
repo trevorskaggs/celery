@@ -1,4 +1,4 @@
-:Version: 3.0.23 (Chiastic Slide)
+:Version: 3.1.3 (Cipater)
 :Web: http://celeryproject.org/
 :Download: http://pypi.python.org/pypi/celery/
 :Source: http://github.com/celery/celery/
@@ -16,15 +16,15 @@ machines.
 A task queue's input is a unit of work, called a task, dedicated worker
 processes then constantly monitor the queue for new work to perform.
 
-Celery communicates via messages using a broker
+Celery communicates via messages, usually using a broker
 to mediate between clients and workers.  To initiate a task a client puts a
 message on the queue, the broker then delivers the message to a worker.
 
 A Celery system can consist of multiple workers and brokers, giving way
 to high availability and horizontal scaling.
 
-Celery is written in Python, but the protocol can be implemented in any
-language.  So far there's RCelery_ for the Ruby programming language, and a
+Celery is a library written in Python, but the protocol can be implemented in
+any language.  So far there's RCelery_ for the Ruby programming language, and a
 `PHP client`, but language interoperability can also be achieved
 by using webhooks.
 
@@ -46,9 +46,9 @@ This is the last version to support Python 2.5,
 and from Celery 3.1, Python 2.6 or later is required.
 The last version to support Python 2.4 was Celery series 2.2.
 
-*Celery* requires a message broker to send and receive messages.
-The RabbitMQ, Redis and MongoDB broker transports are feature complete,
-but there's also support for a myriad of other solutions, including
+*Celery* is usually used with a message broker to send and receive messages.
+The RabbitMQ, Redis transports are feature complete,
+but there's also experimental support for a myriad of other solutions, including
 using SQLite for local development.
 
 *Celery* can run on a single machine, on multiple machines, or even
@@ -75,8 +75,8 @@ getting started tutorials:
 .. _`Next steps`:
     http://docs.celeryproject.org/en/latest/getting-started/next-steps.html
 
-Celery is...
-============
+Celery is…
+==========
 
 - **Simple**
 
@@ -113,20 +113,20 @@ Celery is...
     Custom pool implementations, serializers, compression schemes, logging,
     schedulers, consumers, producers, autoscalers, broker transports and much more.
 
-It supports...
-==============
+It supports…
+============
 
-    - **Brokers**
+    - **Message Transports**
 
         - RabbitMQ_, Redis_,
-        - MongoDB_, Beanstalk_,
-        - CouchDB_, SQLAlchemy_,
-        - Django ORM, Amazon SQS, `IronMQ`_
-        - and more...
+        - MongoDB_ (experimental), Amazon SQS (experimental),
+        - CouchDB_ (experimental), SQLAlchemy_ (experimental),
+        - Django ORM (experimental), `IronMQ`_
+        - and more…
 
     - **Concurrency**
 
-        - multiprocessing, Eventlet_, gevent_, threads/single threaded
+        - Prefork, Eventlet_, gevent_, threads/single threaded
 
     - **Result Stores**
 

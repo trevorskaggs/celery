@@ -16,7 +16,7 @@ from billiard.exceptions import (  # noqa
 
 __all__ = ['SecurityError', 'Ignore', 'SystemTerminate', 'QueueNotFound',
            'ImproperlyConfigured', 'NotRegistered', 'AlreadyRegistered',
-           'TimeoutError', 'MaxRetriesExceededError', 'RetryTaskError',
+           'TimeoutError', 'MaxRetriesExceededError', 'Retry',
            'TaskRevokedError', 'NotConfigured', 'AlwaysEagerIgnored',
            'InvalidTaskError', 'ChordError', 'CPendingDeprecationWarning',
            'CDeprecationWarning', 'FixupWarning', 'DuplicateNodenameWarning',
@@ -38,6 +38,18 @@ class SecurityError(Exception):
 
 class Ignore(Exception):
     """A task can raise this to ignore doing state updates."""
+
+
+class Reject(Exception):
+    """A task can raise this if it wants to reject/requeue the message."""
+
+    def __init__(self, reason=None, requeue=False):
+        self.reason = reason
+        self.requeue = requeue
+        super(Reject, self).__init__(reason, requeue)
+
+    def __repr__(self):
+        return 'reject requeue=%s: %s' % (self.requeue, self.reason)
 
 
 class SystemTerminate(SystemExit):
@@ -71,7 +83,7 @@ class MaxRetriesExceededError(Exception):
     """The tasks max restart limit has been exceeded."""
 
 
-class RetryTaskError(Exception):
+class Retry(Exception):
     """The task is to be retried later."""
 
     #: Optional message describing context of retry.
@@ -102,11 +114,12 @@ class RetryTaskError(Exception):
         if self.message:
             return self.message
         if self.excs:
-            return 'Retry {0}: {1!r}'.format(self.humanize(), self.excs)
+            return 'Retry {0}: {1}'.format(self.humanize(), self.excs)
         return 'Retry {0}'.format(self.humanize())
 
     def __reduce__(self):
         return self.__class__, (self.message, self.excs, self.when)
+RetryTaskError = Retry   # XXX compat
 
 
 class TaskRevokedError(Exception):

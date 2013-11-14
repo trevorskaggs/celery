@@ -157,31 +157,63 @@ For example if the client imports the module "myapp.tasks" as ".tasks", and
 the worker imports the module as "myapp.tasks", the generated names won't match
 and an :exc:`~@NotRegistered` error will be raised by the worker.
 
-This is also the case if using Django and using `project.myapp`::
-
-    INSTALLED_APPS = ('project.myapp', )
-
-The worker will have the tasks registered as "project.myapp.tasks.*",
-while this is what happens in the client if the module is imported as
-"myapp.tasks":
+This is also the case when using Django and using `project.myapp`-style
+naming in ``INSTALLED_APPS``:
 
 .. code-block:: python
 
-    >>> from myapp.tasks import add
-    >>> add.name
-    'myapp.tasks.add'
+    INSTALLED_APPS = ['project.myapp']
 
-For this reason you should never use "project.app", but rather
-add the project directory to the Python path::
+If you install the app under the name ``project.myapp`` then the
+tasks module will be imported as ``project.myapp.tasks``,
+so you must make sure you always import the tasks using the same name:
 
-    import os
-    import sys
-    sys.path.append(os.path.dirname(os.path.basename(__file__)))
+.. code-block:: python
 
-    INSTALLED_APPS = ('myapp', )
+    >>> from project.myapp.tasks import mytask   # << GOOD
 
-This makes more sense from the reusable app perspective anyway.
+    >>> from myapp.tasks import mytask    # << BAD!!!
 
+The second example will cause the task to be named differently
+since the worker and the client imports the modules under different names:
+
+.. code-block:: python
+
+    >>> from project.myapp.tasks import mytask
+    >>> mytask.name
+    'project.myapp.tasks.mytask'
+
+    >>> from myapp.tasks import mytask
+    >>> mytask.name
+    'myapp.tasks.mytask'
+
+So for this reason you must be consistent in how you
+import modules, which is also a Python best practice.
+
+Similarly, you should not use old-style relative imports:
+
+.. code-block:: python
+
+    from module import foo   # BAD!
+
+    from proj.module import foo  # GOOD!
+
+New-style relative imports are fine and can be used:
+
+.. code-block:: python
+
+    from .module import foo  # GOOD!
+
+If you want to use Celery with a project already using these patterns
+extensively and you don't have the time to refactor the existing code
+then you can consider specifying the names explicitly instead of relying
+on the automatic naming:
+
+.. code-block:: python
+
+    @task(name='proj.tasks.add')
+    def add(x, y):
+        return x + y
 
 .. _task-request-info:
 
@@ -239,6 +271,16 @@ The request defines the following attributes:
 :errback: A list of subtasks to be called if this task fails.
 
 :utc: Set to true the caller has utc enabled (:setting:`CELERY_ENABLE_UTC`).
+
+
+.. versionadded:: 3.1
+
+:headers:  Mapping of message headers (may be :const:`None`).
+
+:reply_to:  Where to send reply to (queue name).
+
+:correlation_id: Usually the same as the task id, often used in amqp
+                 to keep track of what a reply is for.
 
 
 An example task accessing information in the context is:
@@ -319,7 +361,7 @@ Here's an example using ``retry``:
 .. note::
 
     The :meth:`~@Task.retry` call will raise an exception so any code after the retry
-    will not be reached.  This is the :exc:`~@RetryTaskError`
+    will not be reached.  This is the :exc:`~@Retry`
     exception, it is not handled as an error but rather as a semi-predicate
     to signify to the worker that the task is to be retried,
     so that it can store the correct state when a result backend is enabled.
@@ -341,7 +383,7 @@ but this will not happen if:
 
 - An ``exc`` argument was not given.
 
-    In this case the :exc:`celery.exceptions.MaxRetriesExceeded`
+    In this case the :exc:`~@MaxRetriesExceeded`
     exception will be raised.
 
 - There is no current exception
@@ -374,7 +416,7 @@ override this default.
     @app.task(bind=True, default_retry_delay=30 * 60)  # retry in 30 minutes.
     def add(x, y):
         try:
-            ...
+            …
         except Exception as exc:
             raise self.retry(exc=exc, countdown=60)  # override the default and
                                                      # retry in 1 minute
@@ -576,9 +618,10 @@ You can also define :ref:`custom-states`.
 Result Backends
 ---------------
 
-Celery needs to store or send the states somewhere.  There are several
-built-in backends to choose from: SQLAlchemy/Django ORM, Memcached,
-RabbitMQ (amqp), MongoDB, and Redis -- or you can define your own.
+If you want to keep track of tasks or need the return values, then Celery
+must store or send the states somewhere so that they can be retrieved later.
+There are several built-in result backends to choose from: SQLAlchemy/Django ORM,
+Memcached, RabbitMQ (amqp), MongoDB, and Redis -- or you can define your own.
 
 No backend works well for every use case.
 You should read about the strengths and weaknesses of each backend, and choose
@@ -790,6 +833,122 @@ you have to pass them as regular args:
 
             super(HttpError, self).__init__(status_code, headers, body)
 
+.. _task-semipredicates:
+
+Semipredicates
+==============
+
+The worker wraps the task in a tracing function which records the final
+state of the task.  There are a number of exceptions that can be used to
+signal this function to change how it treats the return of the task.
+
+.. _task-semipred-ignore:
+
+Ignore
+------
+
+The task may raise :exc:`~@Ignore` to force the worker to ignore the
+task.  This means that no state will be recorded for the task, but the
+message is still acknowledged (removed from queue).
+
+This is can be used if you want to implement custom revoke-like
+functionality, or manually store the result of a task.
+
+Example keeping revoked tasks in a Redis set:
+
+.. code-block:: python
+
+    from celery.exceptions import Ignore
+
+    @app.task(bind=True)
+    def some_task(self):
+        if redis.ismember('tasks.revoked', self.request.id):
+            raise Ignore()
+
+Example that stores results manually:
+
+.. code-block:: python
+
+    from celery import states
+    from celery.exceptions import Ignore
+
+    @app.task(bind=True)
+    def get_tweets(self, user):
+        timeline = twitter.get_timeline(user)
+        self.update_state(sate=states.SUCCESS, meta=timeline)
+        raise Ignore()
+
+.. _task-semipred-reject:
+
+Reject
+------
+
+The task may raise :exc:`~@Reject` to reject the task message using
+AMQPs ``basic_reject`` method.  This will not have any effect unless
+:attr:`Task.acks_late` is enabled.
+
+Rejecting a message has the same effect as acking it, but some
+brokers may implement additional functionality that can be used.
+For example RabbitMQ supports the concept of `Dead Letter Exchanges`_
+where a queue can be configured to use a dead letter exchange that rejected
+messages are redelivered to.
+
+.. _`Dead Letter Exchanges`: http://www.rabbitmq.com/dlx.html
+
+Reject can also be used to requeue messages, but please be very careful
+when using this as it can easily result in an infinite message loop.
+
+Example using reject when a task causes an out of memory condition:
+
+.. code-block:: python
+
+    import errno
+    from celery.exceptions import Reject
+
+    @app.task(bind=True, acks_late=True)
+    def render_scene(self, path):
+        file = get_file(path)
+        try:
+            renderer.render_scene(file)
+
+        # if the file is too big to fit in memory
+        # we reject it so that it's redelivered to the dead letter exchange
+        # and we can manually inspect the situation.
+        except MemoryError as exc:
+            raise Reject(exc, requeue=False)
+        except OSError as exc:
+            if exc.errno == errno.ENOMEM:
+                raise Reject(exc, requeue=False)
+
+        # For any other error we retry after 10 seconds.
+        except Exception as exc:
+            raise self.retry(exc, countdown=10)
+
+Example requeuing the message:
+
+.. code-block:: python
+
+    import errno
+    from celery.exceptions import Reject
+
+    @app.task(bind=True, acks_late=True)
+    def requeues(self):
+        if not self.request.delivery_info['redelivered']:
+            raise Requeue('no reason', requeue=True)
+        print('received two times')
+
+Consult your broker documentation for more details about the ``basic_reject``
+method.
+
+
+.. _task-semipred-retry:
+
+Retry
+-----
+
+The :exc:`~@Retry` exception is raised by the ``Task.retry`` method
+to tell the worker that the task is being retried.
+
 .. _task-custom-classes:
 
 Custom task classes
@@ -875,7 +1034,7 @@ that can be added to tasks like this:
     @app.task(base=DatabaseTask)
     def process_rows():
         for row in process_rows.db.table.all():
-            ...
+            …
 
 The ``db`` attribute of the ``process_rows`` task will then
 always stay the same in each process.
@@ -912,9 +1071,9 @@ Handlers
     :param status: Current task state.
     :param retval: Task return value/exception.
     :param task_id: Unique id of the task.
-    :param args: Original arguments for the task that failed.
+    :param args: Original arguments for the task that returned.
     :param kwargs: Original keyword arguments for the task
-                   that failed.
+                   that returned.
 
     :keyword einfo: :class:`~celery.datastructures.ExceptionInfo`
                     instance, containing the traceback (if any).
@@ -1032,7 +1191,7 @@ wastes time and resources.
 .. code-block:: python
 
     @app.task(ignore_result=True)
-    def mytask(...)
+    def mytask(…):
         something()
 
 Results can even be disabled globally using the :setting:`CELERY_IGNORE_RESULT`
@@ -1250,7 +1409,7 @@ Let's have a look at another example:
 
     @transaction.commit_on_success
     def create_article(request):
-        article = Article.objects.create(....)
+        article = Article.objects.create(…)
         expand_abbreviations.delay(article.pk)
 
 This is a Django view creating an article object in the database,
@@ -1270,7 +1429,7 @@ depending on state from the current transaction*:
     @transaction.commit_manually
     def create_article(request):
         try:
-            article = Article.objects.create(...)
+            article = Article.objects.create(…)
         except:
             transaction.rollback()
             raise

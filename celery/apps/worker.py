@@ -24,7 +24,7 @@ from billiard import current_process
 from kombu.utils.encoding import safe_str
 
 from celery import VERSION_BANNER, platforms, signals
-from celery.exceptions import SystemTerminate
+from celery.exceptions import CDeprecationWarning, SystemTerminate
 from celery.five import string, string_t
 from celery.loaders.app import AppLoader
 from celery.app import trace
@@ -39,6 +39,42 @@ __all__ = ['Worker']
 logger = get_logger(__name__)
 is_jython = sys.platform.startswith('java')
 is_pypy = hasattr(sys, 'pypy_version_info')
+
+C_FORCE_ROOT = os.environ.get('C_FORCE_ROOT', False)
+
+ROOT_DISALLOWED = """\
+Running a worker with superuser privileges when the
+worker accepts messages serialized with pickle is a very bad idea!
+
+If you really want to continue then you have to set the C_FORCE_ROOT
+environment variable (but please think about this before you do).
+"""
+
+ROOT_DISCOURAGED = """\
+You are running the worker with superuser privileges, which is
+absolutely not recommended!
+
+Please specify a different user using the -u option.
+"""
+
+W_PICKLE_DEPRECATED = """
+Starting from version 3.2 Celery will refuse to accept pickle by default.
+
+The pickle serializer is a security concern as it may give attackers
+the ability to execute any command.  It's important to secure
+your broker from unauthorized access when using pickle, so we think
+that enabling pickle should require a deliberate action and not be
+the default choice.
+
+If you depend on pickle then you should set a setting to disable this
+warning and to be sure that everything will continue working
+when you upgrade to Celery 3.2::
+
+    CELERY_ACCEPT_CONTENT = ['pickle', 'json', 'msgpack', 'yaml']
+
+You must only enable the serializers that you will actually use.
+
+"""
 
 
 def active_thread_count():
@@ -94,7 +130,8 @@ class Worker(WorkController):
         # this signal can be used to set up configuration for
         # workers by name.
         signals.celeryd_init.send(
-            sender=self.hostname, instance=self, conf=self.app.conf,
+            sender=self.hostname, instance=self,
+            conf=self.app.conf, options=kwargs,
         )
 
     def on_after_init(self, purge=False, no_color=None,
@@ -134,9 +171,15 @@ class Worker(WorkController):
         )
 
         if getattr(os, 'getuid', None) and os.getuid() == 0:
-            warnings.warn(RuntimeWarning(
-                'Running the worker with superuser privileges is discouraged!',
-            ))
+            accept_encoding = self.app.conf.CELERY_ACCEPT_CONTENT
+            if ('pickle' in accept_encoding or
+                    'application/x-python-serialize' in accept_encoding):
+                if not C_FORCE_ROOT:
+                    raise RuntimeError(ROOT_DISALLOWED)
+            warnings.warn(RuntimeWarning(ROOT_DISCOURAGED))
+
+        if not self.app.conf.value_set_for('CELERY_ACCEPT_CONTENT'):
+            warnings.warn(CDeprecationWarning(W_PICKLE_DEPRECATED))
 
         if self.purge:
             self.purge_messages()
@@ -293,12 +336,8 @@ else:  # pragma: no cover
     install_worker_int_handler = lambda *a, **kw: None
 
 
-def _clone_current_worker():
-    if os.fork() == 0:
-        platforms.close_open_fds([
-            sys.__stdin__, sys.__stdout__, sys.__stderr__,
-        ])
-        os.execv(sys.executable, [sys.executable] + sys.argv)
+def _reload_current_worker():
+    os.execv(sys.executable, [sys.executable] + sys.argv)
 
 
 def install_worker_restart_handler(worker, sig='SIGHUP'):
@@ -308,7 +347,7 @@ def install_worker_restart_handler(worker, sig='SIGHUP'):
         set_in_sighandler(True)
         safe_say('Restarting celery worker ({0})'.format(' '.join(sys.argv)))
         import atexit
-        atexit.register(_clone_current_worker)
+        atexit.register(_reload_current_worker)
         from celery.worker import state
         state.should_stop = True
     platforms.signals[sig] = restart_worker_sig_handler

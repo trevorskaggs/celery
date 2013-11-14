@@ -198,11 +198,12 @@ class Celery(object):
                         task = filter(task)
                     return task
 
-                if opts.get('_force_evaluate'):
+                if self.finalized or opts.get('_force_evaluate'):
                     ret = self._task_from_fun(fun, **opts)
                 else:
                     # return a proxy object that evaluates on first use
-                    ret = PromiseProxy(self._task_from_fun, (fun, ), opts)
+                    ret = PromiseProxy(self._task_from_fun, (fun, ), opts,
+                                       __doc__=fun.__doc__)
                     self._pending.append(ret)
                 if _filt:
                     return _filt(ret)
@@ -225,6 +226,7 @@ class Celery(object):
             'app': self,
             'accept_magic_kwargs': False,
             'run': fun if bind else staticmethod(fun),
+            '_decorated': True,
             '__doc__': fun.__doc__,
             '__module__': fun.__module__}, **options))()
         task = self._tasks[T.name]  # return global instance.
@@ -321,22 +323,29 @@ class Celery(object):
     def connection(self, hostname=None, userid=None, password=None,
                    virtual_host=None, port=None, ssl=None,
                    connect_timeout=None, transport=None,
-                   transport_options=None, heartbeat=None, **kwargs):
+                   transport_options=None, heartbeat=None,
+                   login_method=None, failover_strategy=None, **kwargs):
         conf = self.conf
         return self.amqp.Connection(
-            hostname or conf.BROKER_HOST,
+            hostname or conf.BROKER_URL,
             userid or conf.BROKER_USER,
             password or conf.BROKER_PASSWORD,
             virtual_host or conf.BROKER_VHOST,
             port or conf.BROKER_PORT,
             transport=transport or conf.BROKER_TRANSPORT,
             ssl=self.either('BROKER_USE_SSL', ssl),
-            connect_timeout=self.either(
-                'BROKER_CONNECTION_TIMEOUT', connect_timeout),
             heartbeat=heartbeat,
-            login_method=self.either('BROKER_LOGIN_METHOD', None),
-            transport_options=dict(conf.BROKER_TRANSPORT_OPTIONS,
-                                   **transport_options or {}))
+            login_method=login_method or conf.BROKER_LOGIN_METHOD,
+            failover_strategy=(
+                failover_strategy or conf.BROKER_FAILOVER_STRATEGY
+            ),
+            transport_options=dict(
+                conf.BROKER_TRANSPORT_OPTIONS, **transport_options or {}
+            ),
+            connect_timeout=self.either(
+                'BROKER_CONNECTION_TIMEOUT', connect_timeout
+            ),
+        )
     broker_connection = connection
 
     @contextmanager
@@ -385,7 +394,7 @@ class Celery(object):
             )
 
     def select_queues(self, queues=None):
-        return self.amqp.queues.select_subset(queues)
+        return self.amqp.queues.select(queues)
 
     def either(self, default_key, *values):
         """Fallback to the value of a configuration key if none of the
@@ -402,7 +411,12 @@ class Celery(object):
             self.loader)
         return backend(app=self, url=url)
 
+    def on_configure(self):
+        """Callback calld when the app loads configuration"""
+        pass
+
     def _get_config(self):
+        self.on_configure()
         self.configured = True
         s = Settings({}, [self.prepare_config(self.loader.conf),
                           deepcopy(DEFAULTS)])
@@ -427,6 +441,10 @@ class Celery(object):
             if amqp._producer_pool:
                 amqp._producer_pool.force_close_all()
                 amqp._producer_pool = None
+
+    def signature(self, *args, **kwargs):
+        kwargs['app'] = self
+        return self.canvas.signature(*args, **kwargs)
 
     def create_task_cls(self):
         """Creates a base task class using default configuration
@@ -485,7 +503,7 @@ class Celery(object):
         )
 
     def __reduce_keys__(self):
-        """Returns keyword arguments used to reconstruct the object
+        """Return keyword arguments used to reconstruct the object
         when unpickling."""
         return {
             'main': self.main,
@@ -596,7 +614,22 @@ class Celery(object):
         return instantiate(self.log_cls, app=self)
 
     @cached_property
+    def canvas(self):
+        from celery import canvas
+        return canvas
+
+    @cached_property
     def tasks(self):
         self.finalize()
         return self._tasks
+
+    @cached_property
+    def timezone(self):
+        from celery.utils.timeutils import timezone
+        conf = self.conf
+        tz = conf.CELERY_TIMEZONE
+        if not tz:
+            return (timezone.get_timezone('UTC') if conf.CELERY_ENABLE_UTC
+                    else timezone.local)
+        return timezone.get_timezone(self.conf.CELERY_TIMEZONE)
 App = Celery  # compat

@@ -133,7 +133,7 @@ but you can also use :ref:`Eventlet <concurrency-eventlet>`.  The number
 of worker processes/threads can be changed using the :option:`--concurrency`
 argument and defaults to the number of CPUs available on the machine.
 
-.. admonition:: Number of processes (multiprocessing)
+.. admonition:: Number of processes (multiprocessing/prefork pool)
 
     More pool processes are usually better, but there's a cut-off point where
     adding more pool processes affects performance in negative ways.
@@ -156,7 +156,7 @@ Remote control
     commands from the command-line.  It supports all of the commands
     listed below.  See :ref:`monitoring-control` for more information.
 
-pool support: *processes, eventlet, gevent*, blocking:*threads/solo* (see note)
+pool support: *prefork, eventlet, gevent*, blocking:*threads/solo* (see note)
 broker support: *amqp, redis, mongodb*
 
 Workers have the ability to be remote controlled using a high-priority
@@ -215,7 +215,7 @@ to receive the command::
     >>> app.control.broadcast('rate_limit', {
     ...     'task_name': 'myapp.mytask',
     ...     'rate_limit': '200/m'}, reply=True,
-    ...                             destination=['worker1.example.com'])
+    ...                             destination=['worker1@example.com'])
     [{'worker1.example.com': 'New rate limit set successfully'}]
 
 
@@ -236,6 +236,15 @@ persistent on disk (see :ref:`worker-persistent-revokes`).
 When a worker receives a revoke request it will skip executing
 the task, but it won't terminate an already executing task unless
 the `terminate` option is set.
+
+.. note::
+
+    The terminate option is a last resort for administrators when
+    a task is stuck.  It's not for terminating the task,
+    it's for terminating the process that is executing the task, and that
+    process may have already started processing another task at the point
+    when the signal is sent, so for this rason you must never call this
+    programatically.
 
 If `terminate` is set the worker child process processing the task
 will be terminated.  The default signal sent is `TERM`, but you can
@@ -325,7 +334,7 @@ Time Limits
 
 .. versionadded:: 2.0
 
-pool support: *processes*
+pool support: *prefork/gevent*
 
 .. sidebar:: Soft, or hard?
 
@@ -395,16 +404,21 @@ Rate Limits
 Changing rate-limits at runtime
 -------------------------------
 
-Example changing the rate limit for the `myapp.mytask` task to accept
-200 tasks a minute on all servers::
+Example changing the rate limit for the `myapp.mytask` task to execute
+at most 200 tasks of that type every minute:
+
+.. code-block:: python
 
     >>> app.control.rate_limit('myapp.mytask', '200/m')
 
-Example changing the rate limit on a single host by specifying the
-destination host name::
+The above does not specify a destination, so the change request will affect
+all worker instances in the cluster.  If you only want to affect a specific
+list of workers you can include the ``destination`` argument:
+
+.. code-block:: python
 
     >>> app.control.rate_limit('myapp.mytask', '200/m',
-    ...            destination=['worker1.example.com'])
+    ...            destination=['celery@worker1.example.com'])
 
 .. warning::
 
@@ -418,7 +432,7 @@ Max tasks per child setting
 
 .. versionadded:: 2.0
 
-pool support: *processes*
+pool support: *prefork*
 
 With this option you can configure the maximum number of tasks
 a worker can execute before it's replaced by a new process.
@@ -436,7 +450,7 @@ Autoscaling
 
 .. versionadded:: 2.2
 
-pool support: *processes*, *gevent*
+pool support: *prefork*, *gevent*
 
 The *autoscaler* component is used to dynamically resize the pool
 based on load:
@@ -514,7 +528,7 @@ The same can be accomplished dynamically using the :meth:`@control.add_consumer`
     [{u'worker1.local': {u'ok': u"already consuming from u'foo'"}}]
 
     >>> myapp.control.add_consumer('foo', reply=True,
-    ...                            destination=['worker1.local'])
+    ...                            destination=['worker1@example.com'])
     [{u'worker1.local': {u'ok': u"already consuming from u'foo'"}}]
 
 
@@ -532,7 +546,7 @@ even other options::
     ...         'exchange_durable': False,
     ...     },
     ...     reply=True,
-    ...     destination=['worker1.local', 'worker2.local'])
+    ...     destination=['w1@example.com', 'w2@example.com'])
 
 
 .. control:: cancel_consumer
@@ -605,7 +619,7 @@ Autoreloading
 
 .. versionadded:: 2.5
 
-pool support: *processes, eventlet, gevent, threads, solo*
+pool support: *prefork, eventlet, gevent, threads, solo*
 
 Starting :program:`celery worker` with the :option:`--autoreload` option will
 enable the worker to watch for file system changes to all imported task
@@ -621,7 +635,7 @@ the Django ``runserver`` command.
 When auto-reload is enabled the worker starts an additional thread
 that watches for changes in the file system.  New modules are imported,
 and already imported modules are reloaded whenever a change is detected,
-and if the processes pool is used the child processes will finish the work
+and if the prefork pool is used the child processes will finish the work
 they are doing and exit, so that they can be replaced by fresh processes
 effectively reloading the code.
 
@@ -917,7 +931,7 @@ The output will include the following fields:
 
     * ``writes``
 
-        Specific to the processes pool, this shows the distribution of writes
+        Specific to the prefork pool, this shows the distribution of writes
         to each process in the pool when using async I/O.
 
 - ``prefetch_count``
@@ -929,7 +943,7 @@ The output will include the following fields:
     System usage statistics.  The fields available may be different
     on your platform.
 
-    From :man:`getrusage(2)`:
+    From :manpage:`getrusage(2)`:
 
     * ``stime``
 
@@ -1015,10 +1029,12 @@ Additional Commands
 Remote shutdown
 ---------------
 
-This command will gracefully shut down the worker remotely::
+This command will gracefully shut down the worker remotely:
+
+.. code-block:: python
 
     >>> app.control.broadcast('shutdown') # shutdown all workers
-    >>> app.control.broadcast('shutdown, destination='worker1.example.com')
+    >>> app.control.broadcast('shutdown, destination="worker1@example.com")
 
 .. control:: ping
 
@@ -1028,7 +1044,9 @@ Ping
 This command requests a ping from alive workers.
 The workers reply with the string 'pong', and that's just about it.
 It will use the default one second timeout for replies unless you specify
-a custom timeout::
+a custom timeout:
+
+.. code-block:: python
 
     >>> app.control.ping(timeout=0.5)
     [{'worker1.example.com': 'pong'},

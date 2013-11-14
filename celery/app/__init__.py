@@ -19,6 +19,7 @@ from celery._state import (
     get_current_app as current_app,
     get_current_task as current_task,
     _get_active_apps,
+    _task_stack,
 )
 from celery.utils import gen_task_name
 
@@ -27,7 +28,8 @@ from .base import Celery, AppPickler
 
 __all__ = ['Celery', 'AppPickler', 'default_app', 'app_or_default',
            'bugreport', 'enable_trace', 'disable_trace', 'shared_task',
-           'set_default_app', 'current_app', 'current_task']
+           'set_default_app', 'current_app', 'current_task',
+           'push_current_task', 'pop_current_task']
 
 #: Proxy always returning the app set as default.
 default_app = Proxy(lambda: _state.default_app)
@@ -43,6 +45,16 @@ app_or_default = None
 #: This is deprecated and should no longer be used as it's set too early
 #: to be affected by --loader argument.
 default_loader = os.environ.get('CELERY_LOADER') or 'default'  # XXX
+
+
+#: Function used to push a task to the thread local stack
+#: keeping track of the currently executing task.
+#: You must remember to pop the task after.
+push_current_task = _task_stack.push
+
+#: Function used to pop a task from the thread local stack
+#: keeping track of the currently executing task.
+pop_current_task = _task_stack.pop
 
 
 def bugreport(app=None):
@@ -89,8 +101,8 @@ App = Celery  # XXX Compat
 
 
 def shared_task(*args, **kwargs):
-    """Task decorator that creates shared tasks,
-    and returns a proxy that always returns the task from the current apps
+    """Create shared tasks (decorator).
+    Will return a proxy that always takes the task from the current apps
     task registry.
 
     This can be used by library authors to create tasks that will work
@@ -126,7 +138,7 @@ def shared_task(*args, **kwargs):
                     with app._finalize_mutex:
                         app._task_from_fun(fun, **options)
 
-            # Returns a proxy that always gets the task from the current
+            # Return a proxy that always gets the task from the current
             # apps task registry.
             def task_by_cons():
                 app = current_app()

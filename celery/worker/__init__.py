@@ -25,6 +25,7 @@ from billiard.util import Finalize
 from kombu.syn import detect_environment
 
 from celery import bootsteps
+from celery.bootsteps import RUN, TERMINATE
 from celery import concurrency as _concurrency
 from celery import platforms
 from celery import signals
@@ -40,13 +41,24 @@ from . import state
 
 __all__ = ['WorkController', 'default_nodename']
 
-UNKNOWN_QUEUE = """\
+SELECT_UNKNOWN_QUEUE = """\
 Trying to select queue subset of {0!r}, but queue {1} is not
 defined in the CELERY_QUEUES setting.
 
 If you want to automatically declare unknown queues you can
 enable the CELERY_CREATE_MISSING_QUEUES setting.
 """
+
+DESELECT_UNKNOWN_QUEUE = """\
+Trying to deselect queue subset of {0!r}, but queue {1} is not
+defined in the CELERY_QUEUES setting.
+"""
+
+
+def str_to_list(s):
+    if isinstance(s, string_t):
+        return s.split(',')
+    return s
 
 
 def default_nodename(hostname):
@@ -87,17 +99,17 @@ class WorkController(object):
         self.setup_defaults(**kwargs)
         self.on_after_init(**kwargs)
 
+        self.setup_instance(**self.prepare_args(**kwargs))
         self._finalize = [
-            Finalize(self, self.stop, exitpriority=1),
             Finalize(self, self._send_worker_shutdown, exitpriority=10),
         ]
-        self.setup_instance(**self.prepare_args(**kwargs))
 
     def setup_instance(self, queues=None, ready_callback=None, pidfile=None,
-                       include=None, use_eventloop=None, **kwargs):
+                       include=None, use_eventloop=None, exclude_queues=None,
+                       **kwargs):
         self.pidfile = pidfile
-        self.setup_queues(queues)
-        self.setup_includes(include)
+        self.setup_queues(queues, exclude_queues)
+        self.setup_includes(str_to_list(include))
 
         # Set default concurrency
         if not self.concurrency:
@@ -156,30 +168,33 @@ class WorkController(object):
         if self.pidlock:
             self.pidlock.release()
 
-    def setup_queues(self, queues):
-        if isinstance(queues, string_t):
-            queues = queues.split(',')
-        self.queues = queues
+    def setup_queues(self, include, exclude=None):
+        include = str_to_list(include)
+        exclude = str_to_list(exclude)
         try:
-            self.app.select_queues(queues)
+            self.app.amqp.queues.select(include)
         except KeyError as exc:
             raise ImproperlyConfigured(
-                UNKNOWN_QUEUE.format(queues, exc))
+                SELECT_UNKNOWN_QUEUE.format(include, exc))
+        try:
+            self.app.amqp.queues.deselect(exclude)
+        except KeyError as exc:
+            raise ImproperlyConfigured(
+                DESELECT_UNKNOWN_QUEUE.format(exclude, exc))
         if self.app.conf.CELERY_WORKER_DIRECT:
             self.app.amqp.queues.select_add(worker_direct(self.hostname))
 
     def setup_includes(self, includes):
         # Update celery_include to have all known task modules, so that we
         # ensure all task modules are imported in case an execv happens.
-        inc = self.app.conf.CELERY_INCLUDE
+        prev = tuple(self.app.conf.CELERY_INCLUDE)
         if includes:
-            if isinstance(includes, string_t):
-                includes = includes.split(',')
-            inc = self.app.conf.CELERY_INCLUDE = tuple(inc) + tuple(includes)
+            prev += tuple(includes)
+            [self.app.loader.import_task_module(m) for m in includes]
         self.include = includes
         task_modules = set(task.__class__.__module__
                            for task in values(self.app.tasks))
-        self.app.conf.CELERY_INCLUDE = tuple(set(inc) | task_modules)
+        self.app.conf.CELERY_INCLUDE = tuple(set(prev) | task_modules)
 
     def prepare_args(self, **kwargs):
         return kwargs
@@ -199,6 +214,9 @@ class WorkController(object):
         except (KeyboardInterrupt, SystemExit):
             self.stop()
 
+    def register_with_event_loop(self, hub):
+        self.blueprint.send_all(self, 'register_with_event_loop', args=(hub, ))
+
     def _process_task_sem(self, req):
         return self._quick_acquire(self._process_task, req)
 
@@ -214,12 +232,6 @@ class WorkController(object):
         except Exception as exc:
             logger.critical('Internal error: %r\n%s',
                             exc, traceback.format_exc(), exc_info=True)
-        except SystemTerminate:
-            self.terminate()
-            raise
-        except BaseException as exc:
-            self.stop()
-            raise exc
 
     def signal_consumer_close(self):
         try:
@@ -233,15 +245,17 @@ class WorkController(object):
 
     def stop(self, in_sighandler=False):
         """Graceful shutdown of the worker server."""
-        self.signal_consumer_close()
-        if not in_sighandler or self.pool.signal_safe:
-            self._shutdown(warm=True)
+        if self.blueprint.state == RUN:
+            self.signal_consumer_close()
+            if not in_sighandler or self.pool.signal_safe:
+                self._shutdown(warm=True)
 
     def terminate(self, in_sighandler=False):
         """Not so graceful shutdown of the worker server."""
-        self.signal_consumer_close()
-        if not in_sighandler or self.pool.signal_safe:
-            self._shutdown(warm=False)
+        if self.blueprint.state != TERMINATE:
+            self.signal_consumer_close()
+            if not in_sighandler or self.pool.signal_safe:
+                self._shutdown(warm=False)
 
     def _shutdown(self, warm=True):
         # if blueprint does not exist it means that we had an
@@ -300,6 +314,14 @@ class WorkController(object):
         except NotImplementedError:
             info['rusage'] = 'N/A'
         return info
+
+    def __repr__(self):
+        return '<Worker: {self.hostname} ({state})>'.format(
+            self=self, state=self.blueprint.human_state(),
+        )
+
+    def __str__(self):
+        return self.hostname
 
     @property
     def state(self):

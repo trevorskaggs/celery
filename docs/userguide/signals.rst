@@ -21,30 +21,33 @@ Basics
 Several kinds of events trigger signals, you can connect to these signals
 to perform actions as they trigger.
 
-Example connecting to the :signal:`task_sent` signal:
+Example connecting to the :signal:`after_task_publish` signal:
 
 .. code-block:: python
 
-    from celery.signals import task_sent
+    from celery.signals import after_task_publish
 
-    @task_sent.connect
-    def task_sent_handler(sender=None, task_id=None, task=None, args=None,
-                          kwargs=None, **kwds):
-        print('Got signal task_sent for task id {0}'.format(task_id))
+    @after_task_publish.connect
+    def task_sent_handler(sender=None, body=None, **kwargs):
+        print('after_task_publish for task id {body[id]}'.format(
+            body=body,
+        ))
 
 
 Some signals also have a sender which you can filter by. For example the
-:signal:`task_sent` signal uses the task name as a sender, so you can
-connect your handler to be called only when tasks with name `"tasks.add"`
-has been sent by providing the `sender` argument to
-:class:`~celery.utils.dispatch.signal.Signal.connect`:
+:signal:`after_task_publish` signal uses the task name as a sender, so by
+providing the ``sender`` argument to
+:class:`~celery.utils.dispatch.signal.Signal.connect` you can
+connect your handler to be called every time a task with name `"proj.tasks.add"`
+is published:
 
 .. code-block:: python
 
-    @task_sent.connect(sender='tasks.add')
-    def task_sent_handler(sender=None, task_id=None, task=None, args=None,
-                          kwargs=None, **kwds):
-        print('Got signal task_sent for task id {0}'.format(task_id)
+    @after_task_publish.connect(sender='proj.tasks.add')
+    def task_sent_handler(sender=None, body=None, **kwargs):
+        print('after_task_publish for task id {body[id]}'.format(
+            body=body,
+        ))
 
 Signals use the same implementation as django.core.dispatch. As a result other
 keyword parameters (e.g. signal) are passed to all signal handlers by default.
@@ -61,37 +64,77 @@ Signals
 Task Signals
 ------------
 
-.. signal:: task_sent
+.. signal:: before_task_publish
 
-task_sent
-~~~~~~~~~
+before_task_publish
+~~~~~~~~~~~~~~~~~~~
+.. versionadded:: 3.1
+
+Dispatched before a task is published.
+Note that this is executed in the process sending the task.
+
+Sender is the name of the task being sent.
+
+Provides arguements:
+
+* body
+
+    Task message body.
+
+    This is a mapping containing the task message fields
+    (see :ref:`task-message-protocol-v1`).
+
+* exchange
+
+    Name of the exchange to send to or a :class:`~kombu.Exchange` object.
+
+* routing_key
+
+    Routing key to use when sending the message.
+
+* headers
+
+    Application headers mapping (can be modified).
+
+* properties
+
+    Message properties (can be modified)
+
+* declare
+
+    List of entities (:class:`~kombu.Exchange`,
+    :class:`~kombu.Queue` or :class:~`kombu.binding` to declare before
+    publishing the message.  Can be modified.
+
+* retry_policy
+
+    Mapping of retry options.  Can be any argument to
+    :meth:`kombu.Connection.ensure` and can be modified.
+
+.. signal:: after_task_publish
+
+after_task_publish
+~~~~~~~~~~~~~~~~~~
 
 Dispatched when a task has been sent to the broker.
-Note that this is executed in the client process, the one sending
-the task, not in the worker.
+Note that this is executed in the process that sent the task.
 
 Sender is the name of the task being sent.
 
 Provides arguments:
 
-* task_id
-    Id of the task to be executed.
+* body
 
-* task
-    The task being executed.
+    The task message body, see :ref:`task-message-protocol-v1`
+    for a reference of possible fields that can be defined.
 
-* args
-    the tasks positional arguments.
+* exchange
 
-* kwargs
-    The tasks keyword arguments.
+    Name of the exchange or :class:`~kombu.Exchange` object used.
 
-* eta
-    The time to execute the task.
+* routing_key
 
-* taskset
-    Id of the group this task is part of (if any).
-    (named taskset for historial reasons)
+    Routing key used.
 
 .. signal:: task_prerun
 
@@ -200,6 +243,14 @@ Sender is the task class revoked/terminated.
 
 Provides arguments:
 
+* request
+
+    This is a :class:`~celery.worker.job.Request` instance, and not
+    ``task.request``.   When using the prefork pool this signal
+    is dispatched in the parent process, so ``task.request`` is not available
+    and should not be used.  Use this object instead, which should have many
+    of the same fields.
+
 * terminated
     Set to :const:`True` if the task was terminated.
 
@@ -263,7 +314,7 @@ to setup worker specific configuration:
 
     from celery.signals import celeryd_init
 
-    @celeryd_init.connect(sender='worker12.example.com')
+    @celeryd_init.connect(sender='worker12@example.com')
     def configure_worker12(conf=None, **kwargs):
         conf.CELERY_DEFAULT_RATE_LIMIT = '10/m'
 
@@ -276,9 +327,9 @@ sender when you connect:
 
     @celeryd_init.connect
     def configure_workers(sender=None, conf=None, **kwargs):
-        if sender in ('worker1.example.com', 'worker2.example.com'):
+        if sender in ('worker1@example.com', 'worker2@example.com'):
             conf.CELERY_DEFAULT_RATE_LIMIT = '10/m'
-        if sender == 'worker3.example.com':
+        if sender == 'worker3@example.com':
             conf.CELERYD_PREFETCH_MULTIPLIER = 0
 
 Provides arguments:
@@ -293,6 +344,11 @@ Provides arguments:
 
 * conf
     The configuration of the current app.
+
+* options
+
+    Options passed to the worker from command-line arguments (including
+    defaults).
 
 .. signal:: worker_init
 
@@ -313,7 +369,28 @@ Dispatched when the worker is ready to accept work.
 worker_process_init
 ~~~~~~~~~~~~~~~~~~~
 
-Dispatched by each new pool worker process when it starts.
+Dispatched in all pool child processes when they start.
+
+.. signal:: worker_process_shutdown
+
+worker_process_shutdown
+~~~~~~~~~~~~~~~~~~~~~~~
+
+Dispatched in all pool child processes just before they exit.
+
+Note: There is no guarantee that this signal will be dispatched,
+similarly to finally blocks it's impossible to guarantee that handlers
+will be called at shutdown, and if called it may be interrupted during.
+
+Provides arguments:
+
+* pid
+
+    The pid of the child process that is about to shutdown.
+
+* exitcode
+
+    The exitcode that will be used when the child process exits.
 
 .. signal:: worker_shutdown
 
@@ -475,3 +552,59 @@ Provides arguments:
 
 * colorize
     Specify if log messages are colored or not.
+
+Command signals
+---------------
+
+.. signal:: user_preload_options
+
+user_preload_options
+~~~~~~~~~~~~~~~~~~~~
+
+This signal is sent after any of the Celery command line programs
+are finished parsing the user preload options.
+
+It can be used to add additional command-line arguments to the
+:program:`celery` umbrella command:
+
+.. code-block:: python
+
+    from celery import Celery
+    from celery import signals
+    from celery.bin.base import Option
+
+    app = Celery()
+    app.user_options['preload'].add(Option(
+        '--monitoring', action='store_true',
+        help='Enable our external monitoring utility, blahblah',
+    ))
+
+    @signals.user_preload_options.connect
+    def handle_preload_options(options, **kwargs):
+        if options['monitoring']:
+            enable_monitoring()
+
+
+Sender is the :class:`~celery.bin.base.Command` instance, which depends
+on what program was called (e.g. for the umbrella command it will be
+a :class:`~celery.bin.celery.CeleryCommand`) object).
+
+Provides arguments:
+
+* app
+
+    The app instance.
+
+* options
+
+    Mapping of the parsed user preload options (with default values).
+
+Deprecated Signals
+------------------
+
+.. signal:: task_sent
+
+task_sent
+~~~~~~~~~
+
+This signal is deprecated, please use :signal:`after_task_publish` instead.

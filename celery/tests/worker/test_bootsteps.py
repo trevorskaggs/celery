@@ -1,10 +1,8 @@
 from __future__ import absolute_import
 
-from mock import Mock, patch
-
 from celery import bootsteps
 
-from celery.tests.case import AppCase
+from celery.tests.case import AppCase, Mock, patch
 
 
 class test_StepFormatter(AppCase):
@@ -187,10 +185,10 @@ class test_StartStopStep(AppCase):
 
     def test_terminate(self):
         x = self.Def(self)
-        x.terminable = False
         x.create = Mock()
 
         x.include(self)
+        delattr(x.obj, 'terminate')
         x.terminate(self)
         x.obj.stop.assert_called_with()
 
@@ -230,7 +228,7 @@ class test_Blueprint(AppCase):
         blueprint.send_all = Mock()
         blueprint.close(1)
         blueprint.send_all.assert_called_with(
-            1, 'close', 'Closing', reverse=False,
+            1, 'close', 'closing', reverse=False,
         )
 
     def test_send_all_with_None_steps(self):

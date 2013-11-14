@@ -16,7 +16,7 @@ The API>RCP Precedence Rule
 - The API is more important than Readability
 - Readability is more important than Convention
 - Convention is more important than Performance
-    - ...unless the code is a proven hotspot.
+    - …unless the code is a proven hotspot.
 
 More important than anything else is the end-user API.
 Conventions must step aside, and any suffering is always alleviated
@@ -205,7 +205,7 @@ and here's the same using Celery app objects:
     from .celery import celery
     from .models import CeleryStats
 
-    @celery.task
+    @app.task
     def write_stats_to_db():
         stats = celery.control.inspect().stats(timeout=1)
         for node_name, reply in stats:
@@ -268,7 +268,7 @@ Module Overview
 
 - celery.concurrency
 
-    Execution pool implementations (processes, eventlet, gevent, threads).
+    Execution pool implementations (prefork, eventlet, gevent, threads).
 
 - celery.db
 

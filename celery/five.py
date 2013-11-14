@@ -16,7 +16,7 @@ __all__ = ['Counter', 'reload', 'UserList', 'UserDict', 'Queue', 'Empty',
            'nextfun', 'reraise', 'WhateverIO', 'with_metaclass',
            'OrderedDict', 'THREAD_TIMEOUT_MAX', 'format_d',
            'class_property', 'reclassmethod', 'create_module',
-           'recreate_module']
+           'recreate_module', 'monotonic']
 
 try:
     from collections import Counter
@@ -45,6 +45,8 @@ try:
 except ImportError:                         # pragma: no cover
     from collections import UserDict        # noqa
 
+
+from kombu.five import monotonic
 
 if PY3:  # pragma: no cover
     import builtins

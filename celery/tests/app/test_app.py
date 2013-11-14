@@ -1,9 +1,9 @@
 from __future__ import absolute_import
 
 import os
+import itertools
 
 from copy import deepcopy
-from mock import Mock, patch
 from pickle import loads, dumps
 
 from celery import shared_task, current_app
@@ -20,8 +20,10 @@ from celery.utils.serialization import pickle
 from celery.tests.case import (
     CELERY_TEST_CONFIG,
     AppCase,
+    Mock,
     depends_on_current_app,
     mask_modules,
+    patch,
     platform_pyimp,
     sys_platform,
     pypy_version,
@@ -168,7 +170,7 @@ class test_App(AppCase):
     @with_environ('CELERY_BROKER_URL', '')
     def test_with_broker(self):
         with self.Celery(broker='foo://baribaz') as app:
-            self.assertEqual(app.conf.BROKER_HOST, 'foo://baribaz')
+            self.assertEqual(app.conf.BROKER_URL, 'foo://baribaz')
 
     def test_repr(self):
         self.assertTrue(repr(self.app))
@@ -292,15 +294,6 @@ class test_App(AppCase):
                 args = create.call_args[0][2]
                 self.assertEqual(args, ('hello', 4, 5))
                 self.assertTrue(send.called)
-
-    def test_apply_async__connection_arg(self):
-        @self.app.task(shared=False)
-        def aacaX():
-            pass
-
-        connection = self.app.connection('asd://')
-        with self.assertRaises(KeyError):
-            aacaX.apply_async(connection=connection)
 
     def test_apply_async_adds_children(self):
         from celery._state import _task_stack
@@ -493,6 +486,32 @@ class test_App(AppCase):
         conn = self.app.connection('pyamqp:////value')
         self.assertDictContainsSubset({'virtual_host': '/value'},
                                       conn.info())
+
+    def test_amqp_failover_strategy_selection(self):
+        # Test passing in a string and make sure the string
+        # gets there untouched
+        self.app.conf.BROKER_FAILOVER_STRATEGY = 'foo-bar'
+        self.assertEquals(
+            self.app.connection('amqp:////value').failover_strategy,
+            'foo-bar',
+        )
+
+        # Try passing in None
+        self.app.conf.BROKER_FAILOVER_STRATEGY = None
+        self.assertEquals(
+            self.app.connection('amqp:////value').failover_strategy,
+            itertools.cycle,
+        )
+
+        # Test passing in a method
+        def my_failover_strategy(it):
+            yield True
+
+        self.app.conf.BROKER_FAILOVER_STRATEGY = my_failover_strategy
+        self.assertEquals(
+            self.app.connection('amqp:////value').failover_strategy,
+            my_failover_strategy,
+        )
 
     def test_BROKER_BACKEND_alias(self):
         self.assertEqual(self.app.conf.BROKER_BACKEND,

@@ -7,16 +7,13 @@ from collections import deque
 from datetime import datetime, timedelta
 from threading import Event
 
-from billiard.exceptions import WorkerLostError
+from amqp import ChannelError
 from kombu import Connection
-from kombu.async import READ, ERR
 from kombu.common import QoS, ignore_errors
-from kombu.exceptions import StdChannelError
 from kombu.transport.base import Message
-from mock import call, Mock, patch
 
 from celery.app.defaults import DEFAULTS
-from celery.bootsteps import RUN, CLOSE, TERMINATE, StartStopStep
+from celery.bootsteps import RUN, CLOSE, StartStopStep
 from celery.concurrency.base import BasePool
 from celery.datastructures import AttributeDict
 from celery.exceptions import SystemTerminate, TaskRevokedError
@@ -30,7 +27,7 @@ from celery.utils import worker_direct
 from celery.utils.serialization import pickle
 from celery.utils.timer2 import Timer
 
-from celery.tests.case import AppCase, restore_logging
+from celery.tests.case import AppCase, Mock, patch, restore_logging
 
 
 def MockStep(step=None):
@@ -52,9 +49,9 @@ def find_step(obj, typ):
 class Consumer(__Consumer):
 
     def __init__(self, *args, **kwargs):
-        kwargs.setdefault('enable_mingle', False)  # disable Mingle step
-        kwargs.setdefault('enable_gossip', False)  # disable Gossip step
-        kwargs.setdefault('enable_heartbeat', False)  # disable Heart step
+        kwargs.setdefault('without_mingle', True)  # disable Mingle step
+        kwargs.setdefault('without_gossip', True)  # disable Gossip step
+        kwargs.setdefault('without_heartbeat', True)  # disable Heart step
         super(Consumer, self).__init__(*args, **kwargs)
 
 
@@ -199,6 +196,7 @@ class test_Consumer(AppCase):
     @patch('celery.worker.consumer.warn')
     def test_receive_message_unknown(self, warn):
         l = _MyKombuConsumer(self.buffer.put, timer=self.timer, app=self.app)
+        l.blueprint.state = RUN
         l.steps.pop()
         backend = Mock()
         m = create_message(backend, unknown={'baz': '!!!'})
@@ -213,6 +211,7 @@ class test_Consumer(AppCase):
     def test_receive_message_eta_OverflowError(self, to_timestamp):
         to_timestamp.side_effect = OverflowError()
         l = _MyKombuConsumer(self.buffer.put, timer=self.timer, app=self.app)
+        l.blueprint.state = RUN
         l.steps.pop()
         m = create_message(Mock(), task=self.foo_task.name,
                            args=('2, 2'),
@@ -230,6 +229,7 @@ class test_Consumer(AppCase):
     @patch('celery.worker.consumer.error')
     def test_receive_message_InvalidTaskError(self, error):
         l = _MyKombuConsumer(self.buffer.put, timer=self.timer, app=self.app)
+        l.blueprint.state = RUN
         l.event_dispatcher = Mock()
         l.steps.pop()
         m = create_message(Mock(), task=self.foo_task.name,
@@ -270,6 +270,7 @@ class test_Consumer(AppCase):
 
     def test_receieve_message(self):
         l = Consumer(self.buffer.put, timer=self.timer, app=self.app)
+        l.blueprint.state = RUN
         l.event_dispatcher = Mock()
         m = create_message(Mock(), task=self.foo_task.name,
                            args=[2, 4, 8], kwargs={})
@@ -366,6 +367,7 @@ class test_Consumer(AppCase):
                 self.obj.connection = None
 
         l = Consumer(self.buffer.put, timer=self.timer, app=self.app)
+        l.blueprint.state = RUN
         l.connection = Connection()
         l.connection.obj = l
         l.task_consumer = Mock()
@@ -406,6 +408,7 @@ class test_Consumer(AppCase):
 
     def test_receieve_message_eta_isoformat(self):
         l = _MyKombuConsumer(self.buffer.put, timer=self.timer, app=self.app)
+        l.blueprint.state = RUN
         l.steps.pop()
         m = create_message(
             Mock(), task=self.foo_task.name,
@@ -455,6 +458,7 @@ class test_Consumer(AppCase):
 
     def test_revoke(self):
         l = _MyKombuConsumer(self.buffer.put, timer=self.timer, app=self.app)
+        l.blueprint.state = RUN
         l.steps.pop()
         backend = Mock()
         id = uuid()
@@ -469,6 +473,7 @@ class test_Consumer(AppCase):
 
     def test_receieve_message_not_registered(self):
         l = _MyKombuConsumer(self.buffer.put, timer=self.timer, app=self.app)
+        l.blueprint.state = RUN
         l.steps.pop()
         backend = Mock()
         m = create_message(backend, task='x.X.31x', args=[2, 4, 8], kwargs={})
@@ -484,6 +489,7 @@ class test_Consumer(AppCase):
     @patch('celery.worker.consumer.logger')
     def test_receieve_message_ack_raises(self, logger, warn):
         l = Consumer(self.buffer.put, timer=self.timer, app=self.app)
+        l.blueprint.state = RUN
         backend = Mock()
         m = create_message(backend, args=[2, 4, 8], kwargs={})
 
@@ -497,7 +503,7 @@ class test_Consumer(AppCase):
         with self.assertRaises(Empty):
             self.buffer.get_nowait()
         self.assertTrue(self.timer.empty())
-        m.reject.assert_called_with()
+        m.reject.assert_called_with(requeue=False)
         self.assertTrue(logger.critical.call_count)
 
     def test_receive_message_eta(self):
@@ -512,16 +518,20 @@ class test_Consumer(AppCase):
             eta=(datetime.now() + timedelta(days=1)).isoformat(),
         )
 
-        l.blueprint.start(l)
-        p = l.app.conf.BROKER_CONNECTION_RETRY
-        l.app.conf.BROKER_CONNECTION_RETRY = False
-        l.blueprint.start(l)
-        l.app.conf.BROKER_CONNECTION_RETRY = p
-        l.blueprint.restart(l)
-        l.event_dispatcher = Mock()
-        callback = self._get_on_message(l)
-        callback(m.decode(), m)
-        l.timer.stop()
+        try:
+            l.blueprint.start(l)
+            p = l.app.conf.BROKER_CONNECTION_RETRY
+            l.app.conf.BROKER_CONNECTION_RETRY = False
+            l.blueprint.start(l)
+            l.app.conf.BROKER_CONNECTION_RETRY = p
+            l.blueprint.restart(l)
+            l.event_dispatcher = Mock()
+            callback = self._get_on_message(l)
+            callback(m.decode(), m)
+        finally:
+            l.timer.stop()
+            l.timer.join()
+
         in_hold = l.timer.queue[0]
         self.assertEqual(len(in_hold), 3)
         eta, priority, entry = in_hold
@@ -624,12 +634,12 @@ class test_Consumer(AppCase):
     def test_connect_errback(self, sleep, connect):
         l = MyKombuConsumer(self.buffer.put, timer=self.timer, app=self.app)
         from kombu.transport.memory import Transport
-        Transport.connection_errors = (StdChannelError, )
+        Transport.connection_errors = (ChannelError, )
 
         def effect():
             if connect.call_count > 1:
                 return
-            raise StdChannelError()
+            raise ChannelError('error')
         connect.side_effect = effect
         l.connect()
         connect.assert_called_with()
@@ -740,6 +750,19 @@ class test_WorkController(AppCase):
             self.worker._send_worker_shutdown()
             ws.send.assert_called_with(sender=self.worker)
 
+    def test_process_shutdown_on_worker_shutdown(self):
+        from celery.concurrency.prefork import process_destructor
+        from celery.concurrency.asynpool import Worker
+        with patch('celery.signals.worker_process_shutdown') as ws:
+            Worker._make_shortcuts = Mock()
+            with patch('os._exit') as _exit:
+                worker = Worker(None, None, on_exit=process_destructor)
+                worker._do_exit(22, 3.1415926)
+                ws.send.assert_called_with(
+                    sender=None, pid=22, exitcode=3.1415926,
+                )
+                _exit.assert_called_with(3.1415926)
+
     def test_process_task_revoked_release_semaphore(self):
         self.worker._quick_release = Mock()
         req = Mock()
@@ -770,7 +793,7 @@ class test_WorkController(AppCase):
         with restore_logging():
             from celery import signals
             from celery._state import _tls
-            from celery.concurrency.processes import (
+            from celery.concurrency.prefork import (
                 process_initializer, WORKER_SIGRESET, WORKER_SIGIGNORE,
             )
 
@@ -807,10 +830,10 @@ class test_WorkController(AppCase):
 
     def test_attrs(self):
         worker = self.worker
+        self.assertIsNotNone(worker.timer)
         self.assertIsInstance(worker.timer, Timer)
-        self.assertTrue(worker.timer)
-        self.assertTrue(worker.pool)
-        self.assertTrue(worker.consumer)
+        self.assertIsNotNone(worker.pool)
+        self.assertIsNotNone(worker.consumer)
         self.assertTrue(worker.steps)
 
     def test_with_embedded_beat(self):
@@ -867,7 +890,7 @@ class test_WorkController(AppCase):
         backend = Mock()
         m = create_message(backend, task=self.foo_task.name, args=[4, 8, 10],
                            kwargs={})
-        task = Request.from_message(m, m.decode(), app=self.app)
+        task = Request(m.decode(), message=m, app=self.app)
         worker._process_task(task)
         self.assertEqual(worker.pool.apply_async.call_count, 1)
         worker.pool.stop()
@@ -879,12 +902,11 @@ class test_WorkController(AppCase):
         backend = Mock()
         m = create_message(backend, task=self.foo_task.name, args=[4, 8, 10],
                            kwargs={})
-        task = Request.from_message(m, m.decode(), app=self.app)
+        task = Request(m.decode(), message=m, app=self.app)
         worker.steps = []
         worker.blueprint.state = RUN
         with self.assertRaises(KeyboardInterrupt):
             worker._process_task(task)
-        self.assertEqual(worker.blueprint.state, TERMINATE)
 
     def test_process_task_raise_SystemTerminate(self):
         worker = self.worker
@@ -893,12 +915,11 @@ class test_WorkController(AppCase):
         backend = Mock()
         m = create_message(backend, task=self.foo_task.name, args=[4, 8, 10],
                            kwargs={})
-        task = Request.from_message(m, m.decode(), app=self.app)
+        task = Request(m.decode(), message=m, app=self.app)
         worker.steps = []
         worker.blueprint.state = RUN
         with self.assertRaises(SystemExit):
             worker._process_task(task)
-        self.assertEqual(worker.blueprint.state, TERMINATE)
 
     def test_process_task_raise_regular(self):
         worker = self.worker
@@ -907,12 +928,13 @@ class test_WorkController(AppCase):
         backend = Mock()
         m = create_message(backend, task=self.foo_task.name, args=[4, 8, 10],
                            kwargs={})
-        task = Request.from_message(m, m.decode(), app=self.app)
+        task = Request(m.decode(), message=m, app=self.app)
         worker._process_task(task)
         worker.pool.stop()
 
     def test_start_catches_base_exceptions(self):
         worker1 = self.create_worker()
+        worker1.blueprint.state = RUN
         stc = MockStep()
         stc.start.side_effect = SystemTerminate()
         worker1.steps = [stc]
@@ -921,6 +943,7 @@ class test_WorkController(AppCase):
         self.assertTrue(stc.terminate.call_count)
 
         worker2 = self.create_worker()
+        worker2.blueprint.state = RUN
         sec = MockStep()
         sec.start.side_effect = SystemExit()
         sec.terminate = None
@@ -1023,9 +1046,8 @@ class test_WorkController(AppCase):
     def test_Hub_crate(self):
         w = Mock()
         x = components.Hub(w)
-        hub = x.create(w)
+        x.create(w)
         self.assertTrue(w.timer.max_interval)
-        self.assertIs(w.hub, hub)
 
     def test_Pool_crate_threaded(self):
         w = Mock()
@@ -1040,7 +1062,6 @@ class test_WorkController(AppCase):
         w = Mock()
         w._conninfo.connection_errors = w._conninfo.channel_errors = ()
         w.hub = Mock()
-        w.hub.on_init = []
 
         PoolImp = Mock()
         poolimp = PoolImp.return_value = Mock()
@@ -1049,7 +1070,7 @@ class test_WorkController(AppCase):
         poolimp._fileno_to_inq = {}
         poolimp._fileno_to_outq = {}
 
-        from celery.concurrency.processes import TaskPool as _TaskPool
+        from celery.concurrency.prefork import TaskPool as _TaskPool
 
         class MockTaskPool(_TaskPool):
             Pool = PoolImp
@@ -1063,34 +1084,7 @@ class test_WorkController(AppCase):
         w.consumer.restart_count = -1
         pool = components.Pool(w)
         pool.create(w)
+        pool.register_with_event_loop(w, w.hub)
         self.assertIsInstance(w.semaphore, LaxBoundedSemaphore)
-        self.assertTrue(w.hub.on_init)
         P = w.pool
         P.start()
-
-        hub = Mock()
-        w.hub.on_init[0](hub)
-
-        w = Mock()
-        poolimp.on_process_up(w)
-        hub.add.assert_has_calls([
-            call(w.sentinel, P.maintain_pool, READ | ERR),
-            call(w.outqR_fd, P.handle_result_event, READ | ERR),
-        ])
-
-        poolimp.on_process_down(w)
-        hub.remove.assert_has_calls([
-            call(w.sentinel), call(w.outqR_fd),
-        ])
-
-        w.pool._tref_for_id = {}
-
-        result = Mock()
-        poolimp.on_timeout_cancel(result)
-        poolimp.on_timeout_cancel(result)  # no more tref
-
-        with self.assertRaises(WorkerLostError):
-            P._pool.did_start_ok = Mock()
-            P._pool.did_start_ok.return_value = False
-            w.consumer.restart_count = 0
-            P.on_poll_init(w, hub)

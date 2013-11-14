@@ -15,9 +15,10 @@ from billiard.einfo import ExceptionInfo
 from celery import current_app
 from celery import states
 from celery._state import _task_stack
-from celery.canvas import subtask
-from celery.exceptions import MaxRetriesExceededError, RetryTaskError
+from celery.canvas import signature
+from celery.exceptions import MaxRetriesExceededError, Reject, Retry
 from celery.five import class_property, items, with_metaclass
+from celery.local import Proxy
 from celery.result import EagerResult
 from celery.utils import gen_task_name, fun_takes_kwargs, uuid, maybe_reraise
 from celery.utils.functional import mattrgetter, maybe_list
@@ -42,6 +43,22 @@ R_BOUND_TASK = '<class {0.__name__} of {app}{flags}>'
 R_UNBOUND_TASK = '<unbound {0.__name__}{flags}>'
 R_SELF_TASK = '<@task {0.name} bound to other {0.__self__}>'
 R_INSTANCE = '<@task: {0.name} of {app}{flags}>'
+
+
+class _CompatShared(object):
+
+    def __init__(self, name, cons):
+        self.name = name
+        self.cons = cons
+
+    def __hash__(self):
+        return hash(self.name)
+
+    def __repr__(self):
+        return '<OldTask: %r>' % (self.name, )
+
+    def __call__(self, app):
+        return self.cons(app)
 
 
 def _strflags(flags, default=''):
@@ -73,7 +90,10 @@ class Context(object):
     eta = None
     expires = None
     is_eager = False
+    headers = None
     delivery_info = None
+    reply_to = None
+    correlation_id = None
     taskset = None   # compat alias to group
     group = None
     chord = None
@@ -118,25 +138,54 @@ class TaskType(type):
     from the module and class name.
 
     """
+    _creation_count = {}  # used by old non-abstract task classes
 
     def __new__(cls, name, bases, attrs):
         new = super(TaskType, cls).__new__
         task_module = attrs.get('__module__') or '__main__'
 
         # - Abstract class: abstract attribute should not be inherited.
-        if attrs.pop('abstract', None) or not attrs.get('autoregister', True):
+        abstract = attrs.pop('abstract', None)
+        if abstract or not attrs.get('autoregister', True):
             return new(cls, name, bases, attrs)
 
         # The 'app' attribute is now a property, with the real app located
         # in the '_app' attribute.  Previously this was a regular attribute,
         # so we should support classes defining it.
-        _app1, _app2 = attrs.pop('_app', None), attrs.pop('app', None)
-        app = attrs['_app'] = _app1 or _app2 or current_app
+        app = attrs.pop('_app', None) or attrs.pop('app', None)
+        if not isinstance(app, Proxy) and app is None:
+            for base in bases:
+                if base._app:
+                    app = base._app
+                    break
+            else:
+                app = current_app._get_current_object()
+        attrs['_app'] = app
 
         # - Automatically generate missing/empty name.
         task_name = attrs.get('name')
         if not task_name:
             attrs['name'] = task_name = gen_task_name(app, name, task_module)
+
+        if not attrs.get('_decorated'):
+            # non decorated tasks must also be shared in case
+            # an app is created multiple times due to modules
+            # imported under multiple names.
+            # Hairy stuff,  here to be compatible with 2.x.
+            # People should not use non-abstract task classes anymore,
+            # use the task decorator.
+            from celery.app.builtins import shared_task
+            unique_name = '.'.join([task_module, name])
+            if unique_name not in cls._creation_count:
+                # the creation count is used as a safety
+                # so that the same task is not added recursively
+                # to the set of constructors.
+                cls._creation_count[unique_name] = 1
+                shared_task(_CompatShared(
+                    unique_name,
+                    lambda app: TaskType.__new__(cls, name, bases,
+                                                 dict(attrs, _app=app)),
+                ))
 
         # - Create and register class.
         # Because of the way import happens (recursively)
@@ -323,10 +372,12 @@ class Task(object):
 
     @classmethod
     def _get_app(self):
-        if not self.__bound__ or self._app is None:
+        if self._app is None:
+            self._app = current_app
+        if not self.__bound__:
             # The app property's __set__  method is not called
             # if Task.app is set (on the class), so must bind on use.
-            self.bind(current_app)
+            self.bind(self._app)
         return self._app
     app = class_property(_get_app, bind)
 
@@ -458,9 +509,9 @@ class Task(object):
                               :func:`kombu.compression.register`. Defaults to
                               the :setting:`CELERY_MESSAGE_COMPRESSION`
                               setting.
-        :keyword link: A single, or a list of subtasks to apply if the
+        :keyword link: A single, or a list of tasks to apply if the
                        task exits successfully.
-        :keyword link_error: A single, or a list of subtasks to apply
+        :keyword link_error: A single, or a list of tasks to apply
                       if an error occurs while executing the task.
 
         :keyword producer: :class:`kombu.Producer` instance to use.
@@ -479,13 +530,14 @@ class Task(object):
             be replaced by a local :func:`apply` call instead.
 
         """
-        # add 'self' if this is a bound method.
-        if self.__self__ is not None:
-            args = (self.__self__, ) + tuple(args)
         app = self._get_app()
         if app.conf.CELERY_ALWAYS_EAGER:
             return self.apply(args, kwargs, task_id=task_id or uuid(),
                               link=link, link_error=link_error, **options)
+        # add 'self' if this is a "task_method".
+        if self.__self__ is not None:
+            args = args if isinstance(args, tuple) else tuple(args or ())
+            args = (self.__self__, ) + args
         return app.send_task(
             self.name, args, kwargs, task_id=task_id, producer=producer,
             link=link, link_error=link_error, result_cls=self.AsyncResult,
@@ -502,7 +554,7 @@ class Task(object):
             'task_id': request.id,
             'link': request.callbacks,
             'link_error': request.errbacks,
-            'group_id': request.taskset,
+            'group_id': request.group,
             'chord': request.chord,
             'soft_time_limit': limit_soft,
             'time_limit': limit_hard,
@@ -517,7 +569,7 @@ class Task(object):
         :param kwargs: Keyword arguments to retry with.
         :keyword exc: Custom exception to report when the max restart
             limit has been exceeded (default:
-            :exc:`~celery.exceptions.MaxRetriesExceededError`).
+            :exc:`~@MaxRetriesExceededError`).
 
             If this argument is set and retry is called while
             an exception was raised (``sys.exc_info()`` is set)
@@ -535,13 +587,13 @@ class Task(object):
         :keyword \*\*options: Any extra options to pass on to
                               meth:`apply_async`.
         :keyword throw: If this is :const:`False`, do not raise the
-                        :exc:`~celery.exceptions.RetryTaskError` exception,
+                        :exc:`~@Retry` exception,
                         that tells the worker to mark the task as being
                         retried.  Note that this means the task will be
                         marked as failed if the task raises an exception,
                         or successful if it returns.
 
-        :raises celery.exceptions.RetryTaskError: To tell the worker that
+        :raises celery.exceptions.Retry: To tell the worker that
             the task has been re-sent for retry. This always happens,
             unless the `throw` keyword argument has been explicitly set
             to :const:`False`, and is considered normal operation.
@@ -550,8 +602,11 @@ class Task(object):
 
         .. code-block:: python
 
-            >>> @task()
-            >>> def tweet(auth, message):
+            >>> from imaginary_twitter_lib import Twitter
+            >>> from proj.celery import app
+
+            >>> @app.task()
+            ... def tweet(auth, message):
             ...     twitter = Twitter(oauth=auth)
             ...     try:
             ...         twitter.post_status_update(message)
@@ -572,11 +627,12 @@ class Task(object):
         # so just raise the original exception.
         if request.called_directly:
             maybe_reraise()  # raise orig stack if PyErr_Occurred
-            raise exc or RetryTaskError('Task can be retried', None)
+            raise exc or Retry('Task can be retried', None)
 
         if not eta and countdown is None:
             countdown = self.default_retry_delay
 
+        is_eager = request.is_eager
         S = self.subtask_from_request(
             request, args, kwargs,
             countdown=countdown, eta=eta, retries=retries,
@@ -592,8 +648,13 @@ class Task(object):
 
         # If task was executed eagerly using apply(),
         # then the retry must also be executed eagerly.
-        S.apply().get() if request.is_eager else S.apply_async()
-        ret = RetryTaskError(exc=exc, when=eta or countdown)
+        try:
+            S.apply().get() if is_eager else S.apply_async()
+        except Exception as exc:
+            if is_eager:
+                raise
+            raise Reject(exc, requeue=True)
+        ret = Retry(exc=exc, when=eta or countdown)
         if throw:
             raise ret
         return ret
@@ -669,11 +730,11 @@ class Task(object):
                                            task_name=self.name, **kwargs)
 
     def subtask(self, args=None, *starargs, **starkwargs):
-        """Returns :class:`~celery.subtask` object for
+        """Return :class:`~celery.signature` object for
         this task, wrapping arguments and execution options
         for a single task invocation."""
         starkwargs.setdefault('app', self.app)
-        return subtask(self, args, *starargs, **starkwargs)
+        return signature(self, args, *starargs, **starkwargs)
 
     def s(self, *args, **kwargs):
         """``.s(*a, **k) -> .subtask(a, k)``"""

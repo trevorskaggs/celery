@@ -1,7 +1,6 @@
 from __future__ import absolute_import
 
 from contextlib import contextmanager
-from mock import Mock, patch
 
 from celery import states
 from celery.exceptions import IncompleteStream, TimeoutError
@@ -10,12 +9,12 @@ from celery.result import (
     AsyncResult,
     EagerResult,
     TaskSetResult,
-    from_serializable,
+    result_from_tuple,
 )
 from celery.utils import uuid
 from celery.utils.serialization import pickle
 
-from celery.tests.case import AppCase, depends_on_current_app, skip_if_quick
+from celery.tests.case import AppCase, Mock, depends_on_current_app, patch
 
 
 def mock_task(name, state, result):
@@ -88,7 +87,7 @@ class test_AsyncResult(AppCase):
     def test_get_children(self):
         tid = uuid()
         x = self.app.AsyncResult(tid)
-        child = [self.app.AsyncResult(uuid()).serializable()
+        child = [self.app.AsyncResult(uuid()).as_tuple()
                  for i in range(10)]
         x.backend._cache[tid] = {'children': child}
         self.assertTrue(x.children)
@@ -650,7 +649,6 @@ class test_pending_Group(AppCase):
         with self.assertRaises(TimeoutError):
             self.ts.join(timeout=0.001)
 
-    @skip_if_quick
     def x_join_longer(self):
         with self.assertRaises(TimeoutError):
             self.ts.join(timeout=1)
@@ -686,29 +684,29 @@ class test_EagerResult(AppCase):
         self.assertFalse(res.revoke())
 
 
-class test_serializable(AppCase):
+class test_tuples(AppCase):
 
     def test_AsyncResult(self):
         x = self.app.AsyncResult(uuid())
-        self.assertEqual(x, from_serializable(x.serializable(), self.app))
-        self.assertEqual(x, from_serializable(x, self.app))
+        self.assertEqual(x, result_from_tuple(x.as_tuple(), self.app))
+        self.assertEqual(x, result_from_tuple(x, self.app))
 
     def test_with_parent(self):
         x = self.app.AsyncResult(uuid())
         x.parent = self.app.AsyncResult(uuid())
-        y = from_serializable(x.serializable(), self.app)
+        y = result_from_tuple(x.as_tuple(), self.app)
         self.assertEqual(y, x)
         self.assertEqual(y.parent, x.parent)
         self.assertIsInstance(y.parent, AsyncResult)
 
     def test_compat(self):
         uid = uuid()
-        x = from_serializable([uid, []], app=self.app)
+        x = result_from_tuple([uid, []], app=self.app)
         self.assertEqual(x.id, uid)
 
     def test_GroupResult(self):
         x = self.app.GroupResult(
             uuid(), [self.app.AsyncResult(uuid()) for _ in range(10)],
         )
-        self.assertEqual(x, from_serializable(x.serializable(), self.app))
-        self.assertEqual(x, from_serializable(x, self.app))
+        self.assertEqual(x, result_from_tuple(x.as_tuple(), self.app))
+        self.assertEqual(x, result_from_tuple(x, self.app))

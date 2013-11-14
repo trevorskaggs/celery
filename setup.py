@@ -24,7 +24,6 @@ if sys.version_info < (2, 6):
 
 downgrade_packages = [
     'celery.app.task',
-    'celery.concurrency.processes',
 ]
 orig_path = sys.path[:]
 for path in (os.path.curdir, os.getcwd()):
@@ -71,7 +70,6 @@ classes = """
     Programming Language :: Python :: 2.6
     Programming Language :: Python :: 2.7
     Programming Language :: Python :: 3
-    Programming Language :: Python :: 3.2
     Programming Language :: Python :: 3.3
     Programming Language :: Python :: Implementation :: CPython
     Programming Language :: Python :: Implementation :: PyPy
@@ -126,17 +124,6 @@ try:
 finally:
     meta_fh.close()
 
-# -*- Custom Commands -*-
-
-
-class quicktest(test):
-    extra_env = dict(SKIP_RLIMITS=1, QUICKTEST=1)
-
-    def run(self, *args, **kwargs):
-        for env_name, env_value in self.extra_env.items():
-            os.environ[env_name] = str(env_value)
-        test.run(self, *args, **kwargs)
-
 # -*- Installation Requires -*-
 
 py_version = sys.version_info
@@ -181,20 +168,31 @@ if CELERY_COMPAT_PROGRAMS:
         'celeryd-multi = celery.__main__:_compat_multi',
     ])
 
-# bundles: Only relevant for Celery developers.
-entrypoints['bundle.bundles'] = ['celery = celery.contrib.bundles:bundles']
-
 if is_setuptools:
     extras = lambda *p: reqs('extras', *p)
-    extras_require = extra['extras_require'] = {
+    extra['extras_require'] = {
+        # Celery specific
+        'auth': extras('auth.txt'),
+        'cassandra': extras('cassandra.txt'),
+        'memcache': extras('memcache.txt'),
+        'couchbase': extras('couchbase.txt'),
+        'threads': extras('threads.txt'),
+        'eventlet': extras('eventlet.txt'),
+        'gevent': extras('gevent.txt'),
+
+        'msgpack': extras('msgpack.txt'),
+        'yaml': extras('yaml.txt'),
         'redis': extras('redis.txt'),
         'mongodb': extras('mongodb.txt'),
+        'sqs': extras('sqs.txt'),
         'couchdb': extras('couchdb.txt'),
         'beanstalk': extras('beanstalk.txt'),
         'zookeeper': extras('zookeeper.txt'),
         'zeromq': extras('zeromq.txt'),
         'sqlalchemy': extras('sqlalchemy.txt'),
         'librabbitmq': extras('librabbitmq.txt'),
+        'pyro': extras('pyro.txt'),
+        'slmq': extras('slmq.txt'),
     }
 
 # -*- %%% -*-
@@ -213,7 +211,6 @@ setup(
     install_requires=install_requires,
     tests_require=tests_require,
     test_suite='nose.collector',
-    cmdclass={'quicktest': quicktest},
     classifiers=classifiers,
     entry_points=entrypoints,
     long_description=long_description,

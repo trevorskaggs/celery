@@ -341,8 +341,8 @@ class inspect(_RemoteControl):
     Examples::
 
         celery inspect active --timeout=5
-        celery inspect scheduled -d worker1.example.com
-        celery inspect revoked -d w1.e.com,w2.e.com
+        celery inspect scheduled -d worker1@example.com
+        celery inspect revoked -d w1@e.com,w2@e.com
 
     """
     name = 'inspect'
@@ -370,6 +370,9 @@ class inspect(_RemoteControl):
     def objgraph(self, type_='Request', *args, **kwargs):
         return self.call('objgraph', type_)
 
+    def conf(self, with_defaults=False, *args, **kwargs):
+        return self.call('conf', with_defaults=with_defaults)
+
 
 class control(_RemoteControl):
     """Workers remote control.
@@ -379,7 +382,7 @@ class control(_RemoteControl):
     Examples::
 
         celery control enable_events --timeout=5
-        celery control -d worker1.example.com enable_events
+        celery control -d worker1@example.com enable_events
         celery control -d w1.e.com,w2.e.com enable_events
 
         celery control -d w1.e.com add_consumer queue_name
@@ -408,15 +411,15 @@ class control(_RemoteControl):
 
     def pool_grow(self, method, n=1, **kwargs):
         """[N=1]"""
-        return self.call(method, n, **kwargs)
+        return self.call(method, int(n), **kwargs)
 
     def pool_shrink(self, method, n=1, **kwargs):
         """[N=1]"""
-        return self.call(method, n, **kwargs)
+        return self.call(method, int(n), **kwargs)
 
     def autoscale(self, method, max=None, min=None, **kwargs):
         """[max] [min]"""
-        return self.call(method, max, min, **kwargs)
+        return self.call(method, int(max), int(min), **kwargs)
 
     def rate_limit(self, method, task_name, rate_limit, **kwargs):
         """<task_name> <rate_limit> (e.g. 5/s | 5/m | 5/h)>"""
@@ -424,7 +427,8 @@ class control(_RemoteControl):
 
     def time_limit(self, method, task_name, soft, hard=None, **kwargs):
         """<task_name> <soft_secs> [hard_secs]"""
-        return self.call(method, task_name, soft, hard, reply=True, **kwargs)
+        return self.call(method, task_name,
+                         float(soft), float(hard), reply=True, **kwargs)
 
     def add_consumer(self, method, queue, exchange=None,
                      exchange_type='direct', routing_key=None, **kwargs):
@@ -509,18 +513,6 @@ class shell(Command):  # pragma: no cover
           xmap, xstarmap subtask, Task
         - all registered tasks.
 
-    Example Session:
-
-    .. code-block:: bash
-
-        $ celery shell
-
-        >>> celery
-        <Celery default:0x1012d9fd0>
-        >>> add
-        <@task: tasks.add>
-        >>> add.delay(2, 2)
-        <AsyncResult: 537b48c7-d6d3-427a-a24a-d1b4414035be>
     """
     option_list = Command.option_list + (
         Option('--ipython', '-I',

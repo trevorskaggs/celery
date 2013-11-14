@@ -4,7 +4,6 @@ import sys
 
 from anyjson import dumps
 from datetime import datetime
-from mock import Mock, patch
 
 from celery import __main__
 from celery.platforms import EX_FAILURE, EX_USAGE, EX_OK
@@ -29,7 +28,9 @@ from celery.bin.celery import (
     command,
 )
 
-from celery.tests.case import AppCase, WhateverIO, override_stdouts
+from celery.tests.case import (
+    AppCase, Mock, WhateverIO, override_stdouts, patch,
+)
 
 
 class test__main__(AppCase):
@@ -39,11 +40,6 @@ class test__main__(AppCase):
             __main__._warn_deprecated('YADDA YADDA')
             self.assertIn('command is deprecated', stdout.getvalue())
             self.assertIn('YADDA YADDA', stdout.getvalue())
-
-    def test_maybe_patch_concurrency(self):
-        with patch('celery.platforms.maybe_patch_concurrency') as _mpc:
-            __main__.maybe_patch_concurrency()
-            _mpc.assert_called_with(sys.argv, ['-P'], ['--pool'])
 
     def test_main(self):
         with patch('celery.__main__.maybe_patch_concurrency') as mpc:

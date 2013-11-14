@@ -6,7 +6,7 @@
     Composing task workflows.
 
     Documentation for some of these types are in :mod:`celery`.
-    You should not import these from :mod:`celery` and not this module.
+    You should import these from :mod:`celery` and not this module.
 
 
 """
@@ -20,8 +20,6 @@ from itertools import chain as _chain
 from kombu.utils import cached_property, fxrange, kwdict, reprcall, uuid
 
 from celery._state import current_app
-from celery.exceptions import NotRegistered
-from celery.result import AsyncResult, GroupResult
 from celery.utils.functional import (
     maybe_list, is_list, regen,
     chunks as _chunks,
@@ -29,7 +27,7 @@ from celery.utils.functional import (
 from celery.utils.text import truncate
 
 __all__ = ['Signature', 'chain', 'xmap', 'xstarmap', 'chunks',
-           'group', 'chord', 'subtask', 'maybe_subtask']
+           'group', 'chord', 'signature', 'maybe_signature']
 
 
 class _getitem_property(object):
@@ -40,11 +38,13 @@ class _getitem_property(object):
 
     Example:
 
-        class Me(dict):
-            deep = defaultdict(dict)
+        >>> from collections import defaultdict
 
-            foo = _getitem_property('foo')
-            deep_thing = _getitem_property('deep.thing')
+        >>> class Me(dict):
+        ...     deep = defaultdict(dict)
+        ...
+        ...     foo = _getitem_property('foo')
+        ...     deep_thing = _getitem_property('deep.thing')
 
 
         >>> me = Me()
@@ -60,7 +60,7 @@ class _getitem_property(object):
         >>> me.deep_thing = 42
         >>> me.deep_thing
         42
-        >>> me.deep:
+        >>> me.deep
         defaultdict(<type 'dict'>, {'thing': 42})
 
     """
@@ -99,8 +99,8 @@ class Signature(dict):
     arguments will be ignored and the values in the dict will be used
     instead.
 
-        >>> s = subtask('tasks.add', args=(2, 2))
-        >>> subtask(s)
+        >>> s = signature('tasks.add', args=(2, 2))
+        >>> signature(s)
         {'task': 'tasks.add', args=(2, 2), kwargs={}, options={}}
 
     """
@@ -185,7 +185,7 @@ class Signature(dict):
         except KeyError:
             tid = opts['task_id'] = _id or uuid()
         if 'reply_to' not in opts:
-            opts['reply_to'] = self.type.app.oid
+            opts['reply_to'] = self.app.oid
         return self.AsyncResult(tid)
     _freeze = freeze
 
@@ -201,9 +201,12 @@ class Signature(dict):
 
     def set(self, immutable=None, **options):
         if immutable is not None:
-            self.immutable = immutable
+            self.set_immutable(immutable)
         self.options.update(options)
         return self
+
+    def set_immutable(self, immutable):
+        self.immutable = immutable
 
     def apply_async(self, args=(), kwargs={}, **options):
         # For callbacks: extra args are prepended to the stored args.
@@ -275,21 +278,25 @@ class Signature(dict):
 
     @cached_property
     def type(self):
-        return self._type or (self._app or current_app).tasks[self['task']]
+        return self._type or self.app.tasks[self['task']]
+
+    @cached_property
+    def app(self):
+        return self._app or current_app
 
     @cached_property
     def AsyncResult(self):
         try:
             return self.type.AsyncResult
         except KeyError:  # task not registered
-            return AsyncResult
+            return self.app.AsyncResult
 
     @cached_property
     def _apply_async(self):
         try:
             return self.type.apply_async
         except KeyError:
-            return _partial((self._app or current_app).send_task, self['task'])
+            return _partial(self.app.send_task, self['task'])
     id = _getitem_property('options.task_id')
     task = _getitem_property('task')
     args = _getitem_property('args')
@@ -327,8 +334,8 @@ class chain(Signature):
     def type(self):
         try:
             return self._type or self.tasks[0].type.app.tasks['celery.chain']
-        except NotRegistered:
-            return (self._app or current_app).tasks['celery.chain']
+        except KeyError:
+            return self.app.tasks['celery.chain']
 
     def __repr__(self):
         return ' | '.join(repr(t) for t in self.tasks)
@@ -419,6 +426,11 @@ def _maybe_group(tasks):
     return tasks
 
 
+def _maybe_clone(tasks, app):
+    return [s.clone() if isinstance(s, Signature) else signature(s, app=app)
+            for s in tasks]
+
+
 @Signature.register_type
 class group(Signature):
 
@@ -439,27 +451,38 @@ class group(Signature):
                 task['args'] = task._merge(d['args'])[0]
         return group(tasks, app=app, **kwdict(d['options']))
 
-    def apply_async(self, *args, **kwargs):
-        if not self.tasks:
-            return self.freeze()  # empty group returns GroupResult
-        return Signature.apply_async(self, *args, **kwargs)
+    def apply_async(self, args=(), kwargs=None, **options):
+        tasks = _maybe_clone(self.tasks, app=self._app)
+        if not tasks:
+            return self.freeze()
+        # taking the app from the first task in the list,
+        # there may be a better solution to this, e.g.
+        # consolidate tasks with the same app and apply them in
+        # batches.
+        type = tasks[0].type.app.tasks[self['task']]
+        return type(*type.prepare(dict(self.options, **options),
+                                  tasks, args))
+
+    def set_immutable(self, immutable):
+        for task in self.tasks:
+            task.set_immutable(immutable)
+
+    def link(self, sig):
+        # Simply link to first task
+        sig = sig.clone().set(immutable=True)
+        return self.tasks[0].link(sig)
+
+    def link_error(self, sig):
+        sig = sig.clone().set(immutable=True)
+        return self.tasks[0].link_error(sig)
 
     def apply(self, *args, **kwargs):
         if not self.tasks:
             return self.freeze()  # empty group returns GroupResult
         return Signature.apply(self, *args, **kwargs)
 
-    def __call__(self, *partial_args, **opts):
-        tasks = [task.clone() for task in self.tasks]
-        if not tasks:
-            return
-        # taking the app from the first task in the list,
-        # there may be a better solution to this, e.g.
-        # consolidate tasks with the same app and apply them in
-        # batches.
-        type = tasks[0].type.app.tasks[self['task']]
-        return type(*type.prepare(dict(self.options, **opts),
-                                  tasks, partial_args))
+    def __call__(self, *partial_args, **options):
+        return self.apply_async(partial_args, **options)
 
     def freeze(self, _id=None):
         opts = self.options
@@ -469,11 +492,11 @@ class group(Signature):
             gid = opts['task_id'] = uuid()
         new_tasks, results = [], []
         for task in self.tasks:
-            task = maybe_subtask(task).clone()
+            task = maybe_signature(task, app=self._app).clone()
             results.append(task._freeze())
             new_tasks.append(task)
         self.tasks = self.kwargs['tasks'] = new_tasks
-        return GroupResult(gid, results)
+        return self.app.GroupResult(gid, results)
     _freeze = freeze
 
     def skew(self, start=1.0, stop=None, step=1.0):
@@ -501,7 +524,7 @@ class chord(Signature):
         Signature.__init__(
             self, task, args,
             dict(kwargs, header=_maybe_group(header),
-                 body=maybe_subtask(body)), **options
+                 body=maybe_signature(body, app=self._app)), **options
         )
         self.subtask_type = 'chord'
 
@@ -520,16 +543,22 @@ class chord(Signature):
     def type(self):
         return self._type or self.tasks[0].type.app.tasks['celery.chord']
 
-    def __call__(self, body=None, task_id=None, **kwargs):
-        _chord = self.type
-        body = (body or self.kwargs['body']).clone()
-        kwargs = dict(self.kwargs, body=body, **kwargs)
+    def apply_async(self, args=(), kwargs={}, task_id=None, **options):
+        body = kwargs.get('body') or self.kwargs['body']
+        kwargs = dict(self.kwargs, **kwargs)
+        body = body.clone(**options)
+
+        _chord = self._type or body.type.app.tasks['celery.chord']
+
         if _chord.app.conf.CELERY_ALWAYS_EAGER:
-            return self.apply((), kwargs)
+            return self.apply((), kwargs, task_id=task_id, **options)
         res = body.freeze(task_id)
-        parent = _chord(**kwargs)
+        parent = _chord(self.tasks, body, args, **options)
         res.parent = parent
         return res
+
+    def __call__(self, body=None, **options):
+        return self.apply_async((), {'body': body} if body else {}, **options)
 
     def clone(self, *args, **kwargs):
         s = Signature.clone(self, *args, **kwargs)
@@ -548,6 +577,11 @@ class chord(Signature):
         self.body.link_error(errback)
         return errback
 
+    def set_immutable(self, immutable):
+        # changes mutability of header only, not callback.
+        for task in self.tasks:
+            task.set_immutable(immutable)
+
     def __repr__(self):
         if self.body:
             return self.body.reprcall(self.tasks)
@@ -557,15 +591,20 @@ class chord(Signature):
     body = _getitem_property('kwargs.body')
 
 
-def subtask(varies, *args, **kwargs):
+def signature(varies, *args, **kwargs):
     if not (args or kwargs) and isinstance(varies, dict):
         if isinstance(varies, Signature):
             return varies.clone()
         return Signature.from_dict(varies)
     return Signature(varies, *args, **kwargs)
+subtask = signature   # XXX compat
 
 
-def maybe_subtask(d):
-    if d is not None and isinstance(d, dict) and not isinstance(d, Signature):
-        return subtask(d)
-    return d
+def maybe_signature(d, app=None):
+    if d is not None and isinstance(d, dict):
+        if not isinstance(d, Signature):
+            return signature(d, app=app)
+        if app is not None:
+            d._app = app
+        return d
+maybe_subtask = maybe_signature  # XXX compat

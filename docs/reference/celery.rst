@@ -19,7 +19,7 @@ and creating Celery applications.
 :class:`group`        group tasks together
 :class:`chain`        chain tasks together
 :class:`chord`        chords enable callbacks for groups
-:class:`subtask`      task signatures
+:class:`signature`    object describing a task invocation
 :data:`current_app`   proxy to the current application instance
 :data:`current_task`  proxy to the currently executing task
 ===================== ===================================================
@@ -29,9 +29,10 @@ and creating Celery applications.
 
 .. versionadded:: 2.5
 
-.. class:: Celery(main='__main__', broker='amqp://localhost//', ...)
+.. class:: Celery(main='__main__', broker='amqp://localhost//', …)
 
     :param main: Name of the main module if running as `__main__`.
+        This is used as a prefix for task names.
     :keyword broker: URL of the default broker used.
     :keyword loader: The loader class, or the name of the loader class to use.
                      Default is :class:`celery.loaders.app.AppLoader`.
@@ -44,6 +45,9 @@ and creating Celery applications.
     :keyword control: Control object or class name.
     :keyword set_as_current:  Make this the global current app.
     :keyword tasks: A task registry or the name of a registry class.
+    :keyword include: List of modules every worker should import.
+    :keyword fixups: List of fixup plug-ins (see e.g.
+        :mod:`celery.fixups.django`).
 
     .. attribute:: Celery.main
 
@@ -109,19 +113,32 @@ and creating Celery applications.
 
         Base task class for this app.
 
+    .. attribute:: Celery.timezone
+
+        Current timezone for this app.
+        This is a cached property taking the time zone from the
+        :setting:`CELERY_TIMEZONE` setting.
+
     .. method:: Celery.close
 
-        Cleans-up after application, like closing any pool connections.
+        Close any open pool connections and do any other steps necessary
+        to clean up after the application.
+
         Only necessary for dynamically created apps for which you can
-        use the with statement::
+        use the with statement instead::
 
             with Celery(set_as_current=False) as app:
                 with app.connection() as conn:
                     pass
 
+    .. method:: Celery.signature
+
+        Return a new :class:`~celery.canvas.Signature` bound to this app.
+        See :meth:`~celery.signature`
+
     .. method:: Celery.bugreport
 
-        Returns a string with information useful for the Celery core
+        Return a string with information useful for the Celery core
         developers when reporting a bug.
 
     .. method:: Celery.config_from_object(obj, silent=False)
@@ -188,7 +205,7 @@ and creating Celery applications.
         it's important that the same configuration happens at import time
         when pickle restores the object on the other side.
 
-    .. method:: Celery.setup_security(...)
+    .. method:: Celery.setup_security(…)
 
         Setup the message-signing serializer.
         This will affect all application instances (a global operation).
@@ -218,7 +235,7 @@ and creating Celery applications.
 
         Uses :data:`sys.argv` if `argv` is not specified.
 
-    .. method:: Celery.task(fun, ...)
+    .. method:: Celery.task(fun, …)
 
         Decorator to create a task class out of any callable.
 
@@ -226,22 +243,22 @@ and creating Celery applications.
 
         .. code-block:: python
 
-            @celery.task
+            @app.task
             def refresh_feed(url):
-                return ...
+                return …
 
         with setting extra options:
 
         .. code-block:: python
 
-            @celery.task(exchange="feeds")
+            @app.task(exchange="feeds")
             def refresh_feed(url):
-                return ...
+                return …
 
         .. admonition:: App Binding
 
-            For custom apps the task decorator returns proxy
-            objects, so that the act of creating the task is not performed
+            For custom apps the task decorator will return a proxy
+            object, so that the act of creating the task is not performed
             until the task is used or the task registry is accessed.
 
             If you are depending on binding to be deferred, then you must
@@ -249,7 +266,7 @@ and creating Celery applications.
             application is fully set up (finalized).
 
 
-    .. method:: Celery.send_task(name[, args[, kwargs[, ...]]])
+    .. method:: Celery.send_task(name[, args[, kwargs[, …]]])
 
         Send task by name.
 
@@ -333,7 +350,7 @@ and creating Celery applications.
 
     .. method:: Celery.now()
 
-        Returns the current time and date as a :class:`~datetime.datetime`
+        Return the current time and date as a :class:`~datetime.datetime`
         object.
 
     .. method:: Celery.set_current()
@@ -354,7 +371,7 @@ Canvas primitives
 
 See :ref:`guide-canvas` for more about creating task workflows.
 
-.. class:: group(task1[, task2[, task3[,... taskN]]])
+.. class:: group(task1[, task2[, task3[,… taskN]]])
 
     Creates a group of tasks to be executed in parallel.
 
@@ -367,9 +384,11 @@ See :ref:`guide-canvas` for more about creating task workflows.
     A group is lazy so you must call it to take action and evaluate
     the group.
 
-    Calling the group returns :class:`~@GroupResult`.
+    Will return a `group` task that when called will then call of the
+    tasks in the group (and return a :class:`GroupResult` instance
+    that can be used to inspect the state of the group).
 
-.. class:: chain(task1[, task2[, task3[,... taskN]]])
+.. class:: chain(task1[, task2[, task3[,… taskN]]])
 
     Chains tasks together, so that each tasks follows each other
     by being applied as a callback of the previous task.
@@ -410,14 +429,14 @@ See :ref:`guide-canvas` for more about creating task workflows.
     The body is applied with the return values of all the header
     tasks as a list.
 
-.. class:: subtask(task=None, args=(), kwargs={}, options={})
+.. class:: signature(task=None, args=(), kwargs={}, options={})
 
     Describes the arguments and execution options for a single task invocation.
 
     Used as the parts in a :class:`group` or to safely pass
     tasks around as callbacks.
 
-    Subtasks can also be created from tasks::
+    Signatures can also be created from tasks::
 
         >>> add.subtask(args=(), kwargs={}, options={})
 
@@ -434,15 +453,19 @@ See :ref:`guide-canvas` for more about creating task workflows.
     arguments will be ignored and the values in the dict will be used
     instead.
 
-        >>> s = subtask("tasks.add", args=(2, 2))
-        >>> subtask(s)
+        >>> s = signature("tasks.add", args=(2, 2))
+        >>> signature(s)
         {"task": "tasks.add", args=(2, 2), kwargs={}, options={}}
 
-    .. method:: subtask.delay(*args, \*\*kwargs)
+    .. method:: signature.__call__(*args \*\*kwargs)
+
+        Call the task directly (in the current process).
+
+    .. method:: signature.delay(*args, \*\*kwargs)
 
         Shortcut to :meth:`apply_async`.
 
-    .. method:: subtask.apply_async(args=(), kwargs={}, ...)
+    .. method:: signature.apply_async(args=(), kwargs={}, …)
 
         Apply this task asynchronously.
 
@@ -453,46 +476,55 @@ See :ref:`guide-canvas` for more about creating task workflows.
 
         See :meth:`~@Task.apply_async`.
 
-    .. method:: subtask.apply(args=(), kwargs={}, ...)
+    .. method:: signature.apply(args=(), kwargs={}, …)
 
         Same as :meth:`apply_async` but executed the task inline instead
         of sending a task message.
 
-    .. method:: subtask.clone(args=(), kwargs={}, ...)
+    .. method:: signature.freeze(_id=None)
 
-        Returns a copy of this subtask.
+        Finalize the signature by adding a concrete task id.
+        The task will not be called and you should not call the signature
+        twice after freezing it as that will result in two task messages
+        using the same task id.
+
+        :returns: :class:`@AsyncResult` instance.
+
+    .. method:: signature.clone(args=(), kwargs={}, …)
+
+        Return a copy of this signature.
 
         :keyword args: Partial args to be prepended to the existing args.
         :keyword kwargs: Partial kwargs to be merged with the existing kwargs.
         :keyword options: Partial options to be merged with the existing
                           options.
 
-    .. method:: subtask.replace(args=None, kwargs=None, options=None)
+    .. method:: signature.replace(args=None, kwargs=None, options=None)
 
-        Replace the args, kwargs or options set for this subtask.
+        Replace the args, kwargs or options set for this signature.
         These are only replaced if the selected is not :const:`None`.
 
-    .. method:: subtask.link(other_subtask)
+    .. method:: signature.link(other_signature)
 
         Add a callback task to be applied if this task
         executes successfully.
 
-        :returns: ``other_subtask`` (to work with :func:`~functools.reduce`).
+        :returns: ``other_signature`` (to work with :func:`~functools.reduce`).
 
-    .. method:: subtask.link_error(other_subtask)
+    .. method:: signature.link_error(other_signature)
 
         Add a callback task to be applied if an error occurs
         while executing this task.
 
-        :returns: ``other_subtask`` (to work with :func:`~functools.reduce`)
+        :returns: ``other_signature`` (to work with :func:`~functools.reduce`)
 
-    .. method:: subtask.set(...)
+    .. method:: signature.set(…)
 
-        Set arbitrary options (same as ``.options.update(...)``).
+        Set arbitrary options (same as ``.options.update(…)``).
 
-        This is a chaining method call (i.e. it returns itself).
+        This is a chaining method call (i.e. it will return ``self``).
 
-    .. method:: subtask.flatten_links()
+    .. method:: signature.flatten_links()
 
         Gives a recursive list of dependencies (unchain if you will,
         but with links intact).

@@ -24,11 +24,11 @@ from kombu.utils.functional import maybe_evaluate
 from . import __version__
 from . import platforms
 from . import signals
-from .five import items, reraise, values
+from .five import items, reraise, values, monotonic
 from .schedules import maybe_schedule, crontab
 from .utils.imports import instantiate
 from .utils.timeutils import humanize_seconds
-from .utils.log import get_logger
+from .utils.log import get_logger, iter_open_logger_fds
 
 __all__ = ['SchedulingError', 'ScheduleEntry', 'Scheduler',
            'PersistentScheduler', 'Service', 'EmbeddedService']
@@ -89,8 +89,6 @@ class ScheduleEntry(object):
         self.kwargs = kwargs
         self.options = options
         self.schedule = maybe_schedule(schedule, relative, app=self.app)
-        if self.schedule:
-            self.schedule.app = self.app
         self.last_run_at = last_run_at or self._default_now()
         self.total_run_count = total_run_count or 0
 
@@ -98,7 +96,7 @@ class ScheduleEntry(object):
         return self.schedule.now() if self.schedule else self.app.now()
 
     def _next_instance(self, last_run_at=None):
-        """Returns a new instance of the same class, but with
+        """Return a new instance of the same class, but with
         its date and count fields updated."""
         return self.__class__(**dict(
             self,
@@ -106,6 +104,12 @@ class ScheduleEntry(object):
             total_run_count=self.total_run_count + 1,
         ))
     __next__ = next = _next_instance  # for 2to3
+
+    def __reduce__(self):
+        return self.__class__, (
+            self.name, self.task, self.last_run_at, self.total_run_count,
+            self.schedule, self.args, self.kwargs, self.options,
+        )
 
     def update(self, other):
         """Update values from another entry.
@@ -215,7 +219,7 @@ class Scheduler(object):
 
     def should_sync(self):
         return (not self._last_sync or
-                (time.time() - self._last_sync) > self.sync_every)
+                (monotonic() - self._last_sync) > self.sync_every)
 
     def reserve(self, entry):
         new_entry = self.schedule[entry.name] = next(entry)
@@ -257,7 +261,7 @@ class Scheduler(object):
             debug('beat: Synchronizing schedule...')
             self.sync()
         finally:
-            self._last_sync = time.time()
+            self._last_sync = monotonic()
 
     def sync(self):
         pass
@@ -272,6 +276,7 @@ class Scheduler(object):
 
     def _maybe_entry(self, name, entry):
         if isinstance(entry, self.Entry):
+            entry.app = self.app
             return entry
         return self.Entry(**dict(entry, name=name, app=self.app))
 
@@ -499,7 +504,7 @@ else:
             platforms.signals.reset('SIGTERM')
             platforms.close_open_fds([
                 sys.__stdin__, sys.__stdout__, sys.__stderr__,
-            ])
+            ] + list(iter_open_logger_fds()))
             self.service.start(embedded_process=True)
 
         def stop(self):

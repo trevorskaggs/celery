@@ -79,13 +79,11 @@ from optparse import OptionParser, IndentedHelpFormatter, make_option as Option
 from pprint import pformat
 from types import ModuleType
 
-import celery
+from celery import VERSION_BANNER, Celery, maybe_patch_concurrency
+from celery import signals
 from celery.exceptions import CDeprecationWarning, CPendingDeprecationWarning
 from celery.five import items, string, string_t, values
-from celery.platforms import (
-    EX_FAILURE, EX_OK, EX_USAGE,
-    maybe_patch_concurrency,
-)
+from celery.platforms import EX_FAILURE, EX_OK, EX_USAGE
 from celery.utils import term
 from celery.utils import text
 from celery.utils.imports import symbol_by_name, import_from_cwd
@@ -181,7 +179,7 @@ class Command(object):
     args = ''
 
     #: Application version.
-    version = celery.VERSION_BANNER
+    version = VERSION_BANNER
 
     #: If false the parser will raise an exception if positional
     #: args are provided.
@@ -326,7 +324,7 @@ class Command(object):
         return value
 
     def handle_argv(self, prog_name, argv, command=None):
-        """Parses command-line arguments from ``argv`` and dispatches
+        """Parse command-line arguments from ``argv`` and dispatch
         to :meth:`run`.
 
         :param prog_name: The program name (``argv[0]``).
@@ -376,6 +374,11 @@ class Command(object):
         return self.parser.parse_args(arguments)
 
     def create_parser(self, prog_name, command=None):
+        option_list = (
+            self.preload_options +
+            self.get_options() +
+            tuple(self.app.user_options['preload'])
+        )
         return self.prepare_parser(self.Parser(
             prog=prog_name,
             usage=self.usage(command),
@@ -383,7 +386,7 @@ class Command(object):
             epilog=self.epilog,
             formatter=HelpFormatter(),
             description=self.description,
-            option_list=(self.preload_options + self.get_options()),
+            option_list=option_list,
         ))
 
     def prepare_parser(self, parser):
@@ -429,7 +432,16 @@ class Command(object):
             if self.enable_config_from_cmdline:
                 argv = self.process_cmdline_config(argv)
         else:
-            self.app = celery.Celery()
+            self.app = Celery()
+
+        user_preload = tuple(self.app.user_options['preload'] or ())
+        if user_preload:
+            user_options = self.preparse_options(argv, user_preload)
+            for user_option in user_preload:
+                user_options.setdefault(user_option.dest, user_option.default)
+            signals.user_preload_options.send(
+                sender=self, app=self.app, options=user_options,
+            )
         return argv
 
     def find_app(self, app):
@@ -440,19 +452,28 @@ class Command(object):
             sym = import_from_cwd(app)
         if isinstance(sym, ModuleType):
             try:
-                return sym.celery
+                found = sym.app
+                if isinstance(found, ModuleType):
+                    raise AttributeError()
             except AttributeError:
-                if getattr(sym, '__path__', None):
-                    try:
-                        return self.find_app('{0}.celery:'.format(
-                                             app.replace(':', '')))
-                    except ImportError:
-                        pass
-                from celery.app.base import Celery
-                for suspect in values(vars(sym)):
-                    if isinstance(suspect, Celery):
-                        return suspect
-                raise
+                try:
+                    found = sym.celery
+                    if isinstance(found, ModuleType):
+                        raise AttributeError()
+                except AttributeError:
+                    if getattr(sym, '__path__', None):
+                        try:
+                            return self.find_app(
+                                '{0}.celery:'.format(app.replace(':', '')),
+                            )
+                        except ImportError:
+                            pass
+                    for suspect in values(vars(sym)):
+                        if isinstance(suspect, Celery):
+                            return suspect
+                    raise
+            else:
+                return found
         return sym
 
     def symbol_by_name(self, name):
@@ -469,9 +490,12 @@ class Command(object):
         return argv
 
     def parse_preload_options(self, args):
+        return self.preparse_options(args, self.preload_options)
+
+    def preparse_options(self, args, options):
         acc = {}
         opts = {}
-        for opt in self.preload_options:
+        for opt in options:
             for t in (opt._long_opts, opt._short_opts):
                 opts.update(dict(zip(t, [opt] * len(t))))
         index = 0
@@ -513,7 +537,7 @@ class Command(object):
         return options
 
     def with_pool_option(self, argv):
-        """Returns tuple of ``(short_opts, long_opts)`` if the command
+        """Return tuple of ``(short_opts, long_opts)`` if the command
         supports a pool argument, and used to monkey patch eventlet/gevent
         environments as early as possible.
 

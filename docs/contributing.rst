@@ -96,8 +96,54 @@ can pick up where you leave off.
 
 .. _reporting-bugs:
 
-Reporting a Bug
-===============
+
+Reporting Bugs
+==============
+
+.. _vulnsec:
+
+Security
+--------
+
+You must never report security related issues, vulnerabilities or bugs
+including senstive information to the bug tracker, or elsewhere in public.
+Instead sensitive bugs must be sent by email to security@celeryproject.org.
+
+If you'd like to submit the information encrypted our PGP key is::
+
+    -----BEGIN PGP PUBLIC KEY BLOCK-----
+    Version: GnuPG v1.4.15 (Darwin)
+
+    mQENBFJpWDkBCADFIc9/Fpgse4owLNvsTC7GYfnJL19XO0hnL99sPx+DPbfr+cSE
+    9wiU+Wp2TfUX7pCLEGrODiEP6ZCZbgtiPgId+JYvMxpP6GXbjiIlHRw1EQNH8RlX
+    cVxy3rQfVv8PGGiJuyBBjxzvETHW25htVAZ5TI1+CkxmuyyEYqgZN2fNd0wEU19D
+    +c10G1gSECbCQTCbacLSzdpngAt1Gkrc96r7wGHBBSvDaGDD2pFSkVuTLMbIRrVp
+    lnKOPMsUijiip2EMr2DvfuXiUIUvaqInTPNWkDynLoh69ib5xC19CSVLONjkKBsr
+    Pe+qAY29liBatatpXsydY7GIUzyBT3MzgMJlABEBAAG0MUNlbGVyeSBTZWN1cml0
+    eSBUZWFtIDxzZWN1cml0eUBjZWxlcnlwcm9qZWN0Lm9yZz6JATgEEwECACIFAlJp
+    WDkCGwMGCwkIBwMCBhUIAgkKCwQWAgMBAh4BAheAAAoJEOArFOUDCicIw1IH/26f
+    CViDC7/P13jr+srRdjAsWvQztia9HmTlY8cUnbmkR9w6b6j3F2ayw8VhkyFWgYEJ
+    wtPBv8mHKADiVSFARS+0yGsfCkia5wDSQuIv6XqRlIrXUyqJbmF4NUFTyCZYoh+C
+    ZiQpN9xGhFPr5QDlMx2izWg1rvWlG1jY2Es1v/xED3AeCOB1eUGvRe/uJHKjGv7J
+    rj0pFcptZX+WDF22AN235WYwgJM6TrNfSu8sv8vNAQOVnsKcgsqhuwomSGsOfMQj
+    LFzIn95MKBBU1G5wOs7JtwiV9jefGqJGBO2FAvOVbvPdK/saSnB+7K36dQcIHqms
+    5hU4Xj0RIJiod5idlRC5AQ0EUmlYOQEIAJs8OwHMkrdcvy9kk2HBVbdqhgAREMKy
+    gmphDp7prRL9FqSY/dKpCbG0u82zyJypdb7QiaQ5pfPzPpQcd2dIcohkkh7G3E+e
+    hS2L9AXHpwR26/PzMBXyr2iNnNc4vTksHvGVDxzFnRpka6vbI/hrrZmYNYh9EAiv
+    uhE54b3/XhXwFgHjZXb9i8hgJ3nsO0pRwvUAM1bRGMbvf8e9F+kqgV0yWYNnh6QL
+    4Vpl1+epqp2RKPHyNQftbQyrAHXT9kQF9pPlx013MKYaFTADscuAp4T3dy7xmiwS
+    crqMbZLzfrxfFOsNxTUGE5vmJCcm+mybAtRo4aV6ACohAO9NevMx8pUAEQEAAYkB
+    HwQYAQIACQUCUmlYOQIbDAAKCRDgKxTlAwonCNFbB/9esir/f7TufE+isNqErzR/
+    aZKZo2WzZR9c75kbqo6J6DYuUHe6xI0OZ2qZ60iABDEZAiNXGulysFLCiPdatQ8x
+    8zt3DF9BMkEck54ZvAjpNSern6zfZb1jPYWZq3TKxlTs/GuCgBAuV4i5vDTZ7xK/
+    aF+OFY5zN7ciZHkqLgMiTZ+RhqRcK6FhVBP/Y7d9NlBOcDBTxxE1ZO1ute6n7guJ
+    ciw4hfoRk8qNN19szZuq3UU64zpkM2sBsIFM9tGF2FADRxiOaOWZHmIyVZriPFqW
+    RUwjSjs7jBVNq0Vy4fCu/5+e+XLOUBOoqtM5W7ELt0t1w9tXebtPEetV86in8fU2
+    =0chn
+    -----END PGP PUBLIC KEY BLOCK-----
+
+Other bugs
+----------
 
 Bugs can always be described to the :ref:`mailing-list`, but the best
 way to report an issue and to ensure a timely response is to use the
@@ -188,6 +234,7 @@ Branches
 Current active version branches:
 
 * master (http://github.com/celery/celery/tree/master)
+* 3.1 (http://github.com/celery/celery/tree/3.1)
 * 3.0 (http://github.com/celery/celery/tree/3.0)
 
 You can see the state of any branch by looking at the Changelog:
@@ -244,7 +291,7 @@ The versions we currently maintain is:
 
 * 2.1
 
-  This is the last version to use the ``carrot`` AMQP framework.
+  This is the last version to use the ``carrot`` AMQP library.
   Recent versions use ``kombu``.
 
 Archived branches
@@ -362,7 +409,7 @@ Installing the test requirements:
 
 .. code-block:: bash
 
-    $ pip -E $VIRTUAL_ENV install -U -r requirements/test.txt
+    $ pip install -U -r requirements/test.txt
 
 When installation of dependencies is complete you can execute
 the test suite by calling ``nosetests``:
@@ -464,7 +511,7 @@ listed in :file:`requirements/docs.txt`:
 
 .. code-block:: bash
 
-    $ pip -E $VIRTUAL_ENV install -U -r requirements/docs.txt
+    $ pip install -U -r requirements/docs.txt
 
 After these dependencies are installed you should be able to
 build the docs by running:
@@ -490,7 +537,7 @@ Installing the dependencies:
 
 .. code-block:: bash
 
-    $ pip -E $VIRTUAL_ENV install -U -r requirements/pkgutils.txt
+    $ pip install -U -r requirements/pkgutils.txt
 
 pyflakes & PEP8
 ~~~~~~~~~~~~~~~
@@ -645,8 +692,8 @@ is following the conventions.
         from Queue import Queue, Empty
 
         from .datastructures import TokenBucket
+        from .five import zip_longest, items, range
         from .utils import timeutils
-        from .utils.compat import all, izip_longest, chain_from_iterable
 
 * Wildcard imports must not be used (`from xxx import *`).
 
@@ -683,6 +730,65 @@ is following the conventions.
 .. code-block:: python
 
         from . import submodule
+
+
+.. _feature-with-extras:
+
+Contributing features requiring additional libraries
+====================================================
+
+Some features like a new result backend may require additional libraries
+that the user must install.
+
+We use setuptools `extra_requires` for this, and all new optional features
+that require 3rd party libraries must be added.
+
+1) Add a new requirements file in `requirements/extras`
+
+    E.g. for the Cassandra backend this is
+    :file:`requirements/extras/cassandra.txt`, and the file looks like this::
+
+        pycassa
+
+    These are pip requirement files so you can have version specifiers and
+    multiple packages are separated by newline.  A more complex example could
+    be:
+
+        # pycassa 2.0 breaks Foo
+        pycassa>=1.0,<2.0
+        thrift
+
+2) Modify ``setup.py``
+
+    After the requirements file is added you need to add it as an option
+    to ``setup.py`` in the ``extras_require`` section::
+
+        extra['extras_require'] = {
+            # ...
+            'cassandra': extras('cassandra.txt'),
+        }
+
+3) Document the new feature in ``docs/includes/installation.txt``
+
+    You must add your feature to the list in the :ref:`bundles` section
+    of :file:`docs/includes/installation.txt`.
+
+    After you've made changes to this file you need to render
+    the distro :file:`README` file:
+
+    .. code-block:: bash
+
+        $ pip install -U requirements/pkgutils.txt
+        $ paver readme
+
+
+That's all that needs to be done, but remember that if your feature
+adds additional configuration options then these needs to be documented
+in ``docs/configuration.rst``.  Also all settings need to be added to the
+``celery/app/defaults.py`` module.
+
+Result backends require a separate section in the ``docs/configuration.rst``
+file.
 
 .. _contact_information:
 
@@ -754,7 +860,7 @@ celery
 kombu
 -----
 
-Messaging framework.
+Messaging library.
 
 :git: https://github.com/celery/kombu
 :CI: http://travis-ci.org/#!/celery/kombu
@@ -798,7 +904,7 @@ Django <-> Celery Integration.
 cl
 --
 
-Actor framework.
+Actor library.
 
 :git: https://github.com/celery/cl
 :PyPI: http://pypi.python.org/pypi/cl
@@ -906,20 +1012,3 @@ following:
     for series 2.4.
 
 * Also add the previous version under the "versions" tab.
-
-
-Updating bundles
-----------------
-
-First you need to make sure the bundle entrypoints have been installed,
-but either running `develop`, or `install`::
-
-    $ python setup.py develop
-
-Then make sure that you have your PyPI credentials stored in
-:file:`~/.pypirc`, and execute the command::
-
-    $ python setup.py upload_bundles
-
-If you broke something and need to update new versions of the bundles,
-then you can use ``upload_bundles_fix``.

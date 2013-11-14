@@ -3,11 +3,12 @@ from __future__ import absolute_import
 import sys
 
 from importlib import import_module
-from mock import Mock, patch
 
 from celery.app.defaults import NAMESPACES
 
-from celery.tests.case import AppCase, pypy_version, sys_platform
+from celery.tests.case import (
+    AppCase, Mock, patch, pypy_version, sys_platform,
+)
 
 
 class test_defaults(AppCase):
@@ -34,7 +35,7 @@ class test_defaults(AppCase):
     def test_default_pool_pypy_15(self):
         with sys_platform('darwin'):
             with pypy_version((1, 5, 0)):
-                self.assertEqual(self.defaults.DEFAULT_POOL, 'processes')
+                self.assertEqual(self.defaults.DEFAULT_POOL, 'prefork')
 
     def test_deprecated(self):
         source = Mock()

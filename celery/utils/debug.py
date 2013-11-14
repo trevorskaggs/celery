@@ -117,12 +117,15 @@ def sample(x, n, k=0):
     """
     j = len(x) // n
     for _ in range(n):
-        yield x[k]
+        try:
+            yield x[k]
+        except IndexError:
+            break
         k += j
 
 
 def hfloat(f, p=5):
-    """Converts float to value suitable for humans.
+    """Convert float to value suitable for humans.
 
     :keyword p: Float precision.
 
@@ -132,7 +135,7 @@ def hfloat(f, p=5):
 
 
 def humanbytes(s):
-    """Converts bytes to human-readable form (e.g. kB, MB)."""
+    """Convert bytes to human-readable form (e.g. kB, MB)."""
     return next(
         '{0}{1}'.format(hfloat(s / div if div else s), unit)
         for div, unit in UNITS if s >= div
@@ -140,14 +143,14 @@ def humanbytes(s):
 
 
 def mem_rss():
-    """Returns RSS memory usage as a humanized string."""
+    """Return RSS memory usage as a humanized string."""
     p = ps()
     if p is not None:
         return humanbytes(p.get_memory_info().rss)
 
 
 def ps():
-    """Returns the global :class:`psutil.Process` instance,
+    """Return the global :class:`psutil.Process` instance,
     or :const:`None` if :mod:`psutil` is not installed."""
     global _process
     if _process is None and Process is not None:

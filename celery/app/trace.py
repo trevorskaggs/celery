@@ -29,7 +29,7 @@ from celery import states, signals
 from celery._state import _task_stack
 from celery.app import set_default_app
 from celery.app.task import Task as BaseTask, Context
-from celery.exceptions import Ignore, RetryTaskError
+from celery.exceptions import Ignore, Reject, Retry
 from celery.utils.log import get_logger
 from celery.utils.objects import mro_lookup
 from celery.utils.serialization import (
@@ -48,10 +48,11 @@ send_success = signals.task_success.send
 STARTED = states.STARTED
 SUCCESS = states.SUCCESS
 IGNORED = states.IGNORED
+REJECTED = states.REJECTED
 RETRY = states.RETRY
 FAILURE = states.FAILURE
 EXCEPTION_STATES = states.EXCEPTION_STATES
-IGNORE_STATES = frozenset([IGNORED, RETRY])
+IGNORE_STATES = frozenset([IGNORED, RETRY, REJECTED])
 
 #: set by :func:`setup_worker_optimizations`
 _tasks = None
@@ -59,7 +60,7 @@ _patched = {}
 
 
 def task_has_custom(task, attr):
-    """Returns true if the task or one of its bases
+    """Return true if the task or one of its bases
     defines ``attr`` (excluding the one in BaseTask)."""
     return mro_lookup(task.__class__, attr, stop=(BaseTask, object),
                       monkey_patched=['celery.app.task'])
@@ -84,7 +85,7 @@ class TraceInfo(object):
 
     def handle_retry(self, task, store_errors=True):
         """Handle retry exception."""
-        # the exception raised is the RetryTaskError semi-predicate,
+        # the exception raised is the Retry semi-predicate,
         # and it's exc' attribute is the original exception raised (if any).
         req = task.request
         type_, _, tb = sys.exc_info()
@@ -92,7 +93,9 @@ class TraceInfo(object):
             reason = self.retval
             einfo = ExceptionInfo((type_, reason, tb))
             if store_errors:
-                task.backend.mark_as_retry(req.id, reason.exc, einfo.traceback)
+                task.backend.mark_as_retry(
+                    req.id, reason.exc, einfo.traceback, request=req,
+                )
             task.on_retry(reason.exc, req.id, req.args, req.kwargs, einfo)
             signals.task_retry.send(sender=task, request=req,
                                     reason=reason, einfo=einfo)
@@ -110,7 +113,9 @@ class TraceInfo(object):
             einfo.exception = get_pickleable_exception(einfo.exception)
             einfo.type = get_pickleable_etype(einfo.type)
             if store_errors:
-                task.backend.mark_as_failure(req.id, exc, einfo.traceback)
+                task.backend.mark_as_failure(
+                    req.id, exc, einfo.traceback, request=req,
+                )
             task.on_failure(exc, req.id, req.args, req.kwargs, einfo)
             signals.task_failure.send(sender=task, task_id=req.id,
                                       exception=exc, args=req.args,
@@ -125,20 +130,20 @@ class TraceInfo(object):
 def build_tracer(name, task, loader=None, hostname=None, store_errors=True,
                  Info=TraceInfo, eager=False, propagate=False, app=None,
                  IGNORE_STATES=IGNORE_STATES):
-    """Returns a function that traces task execution; catches all
+    """Return a function that traces task execution; catches all
     exceptions and updates result backend with the state and result
 
     If the call was successful, it saves the result to the task result
     backend, and sets the task status to `"SUCCESS"`.
 
-    If the call raises :exc:`~celery.exceptions.RetryTaskError`, it extracts
+    If the call raises :exc:`~@Retry`, it extracts
     the original exception, uses that as the result and sets the task state
     to `"RETRY"`.
 
     If the call results in an exception, it saves the exception as the task
     result, and sets the task state to `"FAILURE"`.
 
-    Returns a function that takes the following arguments:
+    Return a function that takes the following arguments:
 
         :param uuid: The id of the task.
         :param args: List of positional args to pass on to the function.
@@ -186,7 +191,7 @@ def build_tracer(name, task, loader=None, hostname=None, store_errors=True,
     success_receivers = signals.task_success.receivers
 
     from celery import canvas
-    subtask = canvas.subtask
+    signature = canvas.maybe_signature  # maybe_ does not clone if already
 
     def trace_task(uuid, args, kwargs, request=None):
         R = I = None
@@ -203,17 +208,22 @@ def build_tracer(name, task, loader=None, hostname=None, store_errors=True,
                                 args=args, kwargs=kwargs)
                 loader_task_init(uuid, task)
                 if track_started:
-                    store_result(uuid, {'pid': pid,
-                                        'hostname': hostname}, STARTED)
+                    store_result(
+                        uuid, {'pid': pid, 'hostname': hostname}, STARTED,
+                        request=task_request,
+                    )
 
                 # -*- TRACE -*-
                 try:
                     R = retval = fun(*args, **kwargs)
                     state = SUCCESS
+                except Reject as exc:
+                    I, R = Info(REJECTED, exc), ExceptionInfo(internal=True)
+                    state, retval = I.state, I.retval
                 except Ignore as exc:
                     I, R = Info(IGNORED, exc), ExceptionInfo(internal=True)
                     state, retval = I.state, I.retval
-                except RetryTaskError as exc:
+                except Retry as exc:
                     I = Info(RETRY, exc)
                     state, retval = I.state, I.retval
                     R = I.handle_error_state(task, eager=eager)
@@ -223,17 +233,19 @@ def build_tracer(name, task, loader=None, hostname=None, store_errors=True,
                     I = Info(FAILURE, exc)
                     state, retval = I.state, I.retval
                     R = I.handle_error_state(task, eager=eager)
-                    [subtask(errback).apply_async((uuid, ))
+                    [signature(errback, app=app).apply_async((uuid, ))
                         for errback in task_request.errbacks or []]
                 except BaseException as exc:
                     raise
                 else:
                     # callback tasks must be applied before the result is
                     # stored, so that result.children is populated.
-                    [subtask(callback).apply_async((retval, ))
+                    [signature(callback, app=app).apply_async((retval, ))
                         for callback in task_request.callbacks or []]
                     if publish_result:
-                        store_result(uuid, retval, SUCCESS)
+                        store_result(
+                            uuid, retval, SUCCESS, request=task_request,
+                        )
                     if task_on_success:
                         task_on_success(retval, uuid, args, kwargs)
                     if success_receivers:

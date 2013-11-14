@@ -99,6 +99,12 @@ class Blueprint(object):
     state = None
     started = 0
     default_steps = set()
+    state_to_name = {
+        0: 'initializing',
+        RUN: 'running',
+        CLOSE: 'closing',
+        TERMINATE: 'terminating',
+    }
 
     def __init__(self, steps=None, name=None, app=None,
                  on_start=None, on_close=None, on_stopped=None):
@@ -121,6 +127,9 @@ class Blueprint(object):
             step.start(parent)
             debug('^-- substep ok')
 
+    def human_state(self):
+        return self.state_to_name[self.state or 0]
+
     def info(self, parent):
         info = {}
         for step in parent.steps:
@@ -130,24 +139,35 @@ class Blueprint(object):
     def close(self, parent):
         if self.on_close:
             self.on_close()
-        self.send_all(parent, 'close', 'Closing', reverse=False)
+        self.send_all(parent, 'close', 'closing', reverse=False)
 
-    def restart(self, parent, method='stop', description='Restarting'):
-        self.send_all(parent, method, description)
+    def restart(self, parent, method='stop',
+                description='restarting', propagate=False):
+        self.send_all(parent, method, description, propagate=propagate)
 
-    def send_all(self, parent, method, description=None, reverse=True):
+    def send_all(self, parent, method,
+                 description=None, reverse=True, propagate=True, args=()):
         description = description or method.capitalize()
         steps = reversed(parent.steps) if reverse else parent.steps
         with default_socket_timeout(SHUTDOWN_SOCKET_TIMEOUT):  # Issue 975
             for step in steps:
                 if step:
-                    self._debug('%s %s...', description, step.alias)
+                    self._debug('%s %s...',
+                                description.capitalize(), step.alias)
                     fun = getattr(step, method, None)
                     if fun:
-                        fun(parent)
+                        try:
+                            fun(parent, *args)
+                        except Exception as exc:
+                            if propagate:
+                                raise
+                            logger.error(
+                                'Error while %s %s: %r',
+                                description, step.alias, exc, exc_info=1,
+                            )
 
     def stop(self, parent, close=True, terminate=False):
-        what = 'Terminating' if terminate else 'Stopping'
+        what = 'terminating' if terminate else 'stopping'
         if self.state in (CLOSE, TERMINATE):
             return
 
@@ -158,7 +178,11 @@ class Blueprint(object):
             return
         self.close(parent)
         self.state = CLOSE
-        self.restart(parent, 'terminate' if terminate else 'stop', what)
+
+        self.restart(
+            parent, 'terminate' if terminate else 'stop',
+            description=what, propagate=False,
+        )
 
         if self.on_stopped:
             self.on_stopped()
@@ -361,7 +385,8 @@ class StartStopStep(Step):
         pass
 
     def terminate(self, parent):
-        self.stop(parent)
+        if self.obj:
+            return getattr(self.obj, 'terminate', self.obj.stop)()
 
     def include(self, parent):
         inc, ret = self._should_include(parent)
@@ -379,16 +404,17 @@ class ConsumerStep(StartStopStep):
         raise NotImplementedError('missing get_consumers')
 
     def start(self, c):
-        self.consumers = self.get_consumers(c.connection)
+        channel = c.connection.channel()
+        self.consumers = self.get_consumers(channel)
         for consumer in self.consumers or []:
             consumer.consume()
 
     def stop(self, c):
+        channels = set()
         for consumer in self.consumers or []:
             ignore_errors(c.connection, consumer.cancel)
-
-    def shutdown(self, c):
-        self.stop(c)
-        for consumer in self.consumers or []:
             if consumer.channel:
-                ignore_errors(c.connection, consumer.channel.close)
+                channels.add(consumer.channel)
+        for channel in channels:
+            ignore_errors(c.connection, channel.close)
+    shutdown = stop

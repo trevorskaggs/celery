@@ -183,7 +183,7 @@ class _LocalStack(object):
     item from the stack after using.  When the stack is empty it will
     no longer be bound to the current context (and as such released).
 
-    By calling the stack without arguments it returns a proxy that
+    By calling the stack without arguments it will return a proxy that
     resolves to the topmost item on the stack.
 
     """
@@ -219,7 +219,7 @@ class _LocalStack(object):
         return rv
 
     def pop(self):
-        """Removes the topmost item from the stack, will return the
+        """Remove the topmost item from the stack, will return the
         old value or `None` if the stack was already empty.
         """
         stack = getattr(self._local, 'stack', None)

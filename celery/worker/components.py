@@ -9,23 +9,29 @@
 from __future__ import absolute_import
 
 import atexit
-
-from functools import partial
+import warnings
 
 from kombu.async import Hub as _Hub, get_event_loop, set_event_loop
 from kombu.async.semaphore import DummyLock, LaxBoundedSemaphore
+from kombu.async.timer import Timer as _Timer
 
 from celery import bootsteps
+from celery._state import _set_task_join_will_block
 from celery.exceptions import ImproperlyConfigured
 from celery.five import string_t
 from celery.utils.log import worker_logger as logger
-from celery.utils.timer2 import Schedule
 
 __all__ = ['Timer', 'Hub', 'Queues', 'Pool', 'Beat', 'StateDB', 'Consumer']
 
 ERR_B_GREEN = """\
 -B option doesn't work with eventlet/gevent pools: \
 use standalone beat instead.\
+"""
+
+W_POOL_SETTING = """
+The CELERYD_POOL setting should not be used to select the eventlet/gevent
+pools, instead you *must use the -P* argument so that patches are applied
+as early as possible.
 """
 
 
@@ -35,7 +41,7 @@ class Timer(bootsteps.Step):
     def create(self, w):
         if w.use_eventloop:
             # does not use dedicated timer thread.
-            w.timer = Schedule(max_interval=10.0)
+            w.timer = _Timer(max_interval=10.0)
         else:
             if not w.timer_cls:
                 # Default Timer is set by the pool, as e.g. eventlet
@@ -67,7 +73,16 @@ class Hub(bootsteps.StartStopStep):
         if w.hub is None:
             w.hub = set_event_loop(_Hub(w.timer))
         self._patch_thread_primitives(w)
-        return w.hub
+        return self
+
+    def start(self, w):
+        pass
+
+    def stop(self, w):
+        w.hub.close()
+
+    def terminate(self, w):
+        w.hub.close()
 
     def _patch_thread_primitives(self, w):
         # make clock use dummy lock
@@ -111,7 +126,7 @@ class Pool(bootsteps.StartStopStep):
     requires = (Queues, )
 
     def __init__(self, w, autoscale=None, autoreload=None,
-                 no_execv=False, **kwargs):
+                 no_execv=False, optimization=None, **kwargs):
         if isinstance(autoscale, string_t):
             max_c, _, min_c = autoscale.partition(',')
             autoscale = [int(max_c), min_c and int(min_c) or 0]
@@ -123,6 +138,7 @@ class Pool(bootsteps.StartStopStep):
         if w.autoscale:
             w.max_concurrency, w.min_concurrency = w.autoscale
         self.autoreload_enabled = autoreload
+        self.optimization = optimization
 
     def close(self, w):
         if w.pool:
@@ -133,9 +149,11 @@ class Pool(bootsteps.StartStopStep):
             w.pool.terminate()
 
     def create(self, w, semaphore=None, max_restarts=None):
+        if w.app.conf.CELERYD_POOL in ('eventlet', 'gevent'):
+            warnings.warn(UserWarning(W_POOL_SETTING))
         threaded = not w.use_eventloop
         procs = w.min_concurrency
-        forking_enable = not threaded or (w.no_execv or not w.force_execv)
+        forking_enable = w.no_execv if w.force_execv else True
         if not threaded:
             semaphore = w.semaphore = LaxBoundedSemaphore(procs)
             w._quick_acquire = w.semaphore.acquire
@@ -155,13 +173,16 @@ class Pool(bootsteps.StartStopStep):
             allow_restart=allow_restart,
             forking_enable=forking_enable,
             semaphore=semaphore,
+            sched_strategy=self.optimization,
         )
-        if w.hub:
-            w.hub.on_init.append(partial(pool.on_poll_init, w))
+        _set_task_join_will_block(pool.task_join_will_block)
         return pool
 
     def info(self, w):
         return {'pool': w.pool.info}
+
+    def register_with_event_loop(self, w, hub):
+        w.pool.register_with_event_loop(hub)
 
 
 class Beat(bootsteps.StartStopStep):
@@ -204,7 +225,10 @@ class Consumer(bootsteps.StartStopStep):
     last = True
 
     def create(self, w):
-        prefetch_count = w.concurrency * w.prefetch_multiplier
+        if w.max_concurrency:
+            prefetch_count = max(w.min_concurrency, 1) * w.prefetch_multiplier
+        else:
+            prefetch_count = w.concurrency * w.prefetch_multiplier
         c = w.consumer = self.instantiate(
             w.consumer_cls, w.process_task,
             hostname=w.hostname,
@@ -218,5 +242,6 @@ class Consumer(bootsteps.StartStopStep):
             hub=w.hub,
             worker_options=w.options,
             disable_rate_limits=w.disable_rate_limits,
+            prefetch_multiplier=w.prefetch_multiplier,
         )
         return c

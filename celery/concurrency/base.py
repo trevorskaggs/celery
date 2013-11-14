@@ -10,10 +10,13 @@ from __future__ import absolute_import
 
 import logging
 import os
-import time
+import sys
 
+from billiard.einfo import ExceptionInfo
+from billiard.exceptions import WorkerLostError
 from kombu.utils.encoding import safe_repr
 
+from celery.five import monotonic, reraise
 from celery.utils import timer2
 from celery.utils.log import get_logger
 
@@ -23,10 +26,24 @@ logger = get_logger('celery.pool')
 
 
 def apply_target(target, args=(), kwargs={}, callback=None,
-                 accept_callback=None, pid=None, **_):
+                 accept_callback=None, pid=None, getpid=os.getpid,
+                 propagate=(), monotonic=monotonic, **_):
     if accept_callback:
-        accept_callback(pid or os.getpid(), time.time())
-    callback(target(*args, **kwargs))
+        accept_callback(pid or getpid(), monotonic())
+    try:
+        ret = target(*args, **kwargs)
+    except propagate:
+        raise
+    except Exception:
+        raise
+    except BaseException as exc:
+        try:
+            reraise(WorkerLostError, WorkerLostError(repr(exc)),
+                    sys.exc_info()[2])
+        except WorkerLostError:
+            callback(ExceptionInfo())
+    else:
+        callback(ret)
 
 
 class BasePool(object):
@@ -49,6 +66,8 @@ class BasePool(object):
     #: only used by multiprocessing pool
     uses_semaphore = False
 
+    task_join_will_block = True
+
     def __init__(self, limit=None, putlocks=True,
                  forking_enable=True, callbacks_propagate=(), **options):
         self.limit = limit
@@ -70,10 +89,7 @@ class BasePool(object):
     def on_stop(self):
         pass
 
-    def on_poll_init(self, worker, hub):
-        pass
-
-    def on_poll_start(self, hub):
+    def register_with_event_loop(self, loop):
         pass
 
     def on_apply(self, *args, **kwargs):
@@ -86,9 +102,6 @@ class BasePool(object):
         pass
 
     def on_hard_timeout(self, job):
-        pass
-
-    def maybe_handle_result(self, *args):
         pass
 
     def maintain_pool(self, *args, **kwargs):

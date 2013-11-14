@@ -2,19 +2,18 @@ from __future__ import absolute_import
 
 from collections import Callable
 from datetime import datetime, timedelta
-from mock import patch
 
 from kombu import Queue
 
 from celery import Task
 
-from celery.exceptions import RetryTaskError
+from celery.exceptions import Retry
 from celery.five import items, range, string_t
 from celery.result import EagerResult
 from celery.utils import uuid
 from celery.utils.timeutils import parse_iso8601
 
-from celery.tests.case import AppCase, depends_on_current_app
+from celery.tests.case import AppCase, depends_on_current_app, patch
 
 
 def return_True(*args, **kwargs):
@@ -129,7 +128,7 @@ class test_task_retries(TasksCase):
     def test_retry_kwargs_can_be_empty(self):
         self.retry_task_mockapply.push_request()
         try:
-            with self.assertRaises(RetryTaskError):
+            with self.assertRaises(Retry):
                 self.retry_task_mockapply.retry(args=[4, 4], kwargs=None)
         finally:
             self.retry_task_mockapply.pop_request()
@@ -149,7 +148,7 @@ class test_task_retries(TasksCase):
                 self.retry_task_mockapply.applied = 0
 
             try:
-                with self.assertRaises(RetryTaskError):
+                with self.assertRaises(Retry):
                     self.retry_task_mockapply.retry(
                         args=[4, 4], kwargs={'task_retries': 0},
                         exc=exc, throw=True)

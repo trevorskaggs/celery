@@ -15,6 +15,7 @@ from calendar import monthrange
 from datetime import date, datetime, timedelta, tzinfo
 
 from kombu.utils import cached_property, reprcall
+from kombu.utils.compat import timedelta_seconds
 
 from pytz import timezone as _timezone, AmbiguousTimeError
 
@@ -38,8 +39,6 @@ WEEKDAYS = dict(zip(DAYNAMES, range(7)))
 RATE_MODIFIER_MAP = {'s': lambda n: n,
                      'm': lambda n: n / 60.0,
                      'h': lambda n: n / 60.0 / 60.0}
-
-HAVE_TIMEDELTA_TOTAL_SECONDS = hasattr(timedelta, 'total_seconds')
 
 TIME_UNITS = (('day', 60 * 60 * 24.0, lambda n: format(n, '.2f')),
               ('hour', 60 * 60.0, lambda n: format(n, '.2f')),
@@ -113,7 +112,7 @@ class _Zone(object):
     def to_system(self, dt):
         return localize(dt, self.local)
 
-    def to_local_fallback(self, dt, *args, **kwargs):
+    def to_local_fallback(self, dt):
         if is_naive(dt):
             return make_aware(dt, self.local)
         return localize(dt, self.local)
@@ -140,29 +139,6 @@ def maybe_timedelta(delta):
     return delta
 
 
-if HAVE_TIMEDELTA_TOTAL_SECONDS:   # pragma: no cover
-
-    def timedelta_seconds(delta):
-        """Convert :class:`datetime.timedelta` to seconds.
-
-        Doesn't account for negative values.
-
-        """
-        return max(delta.total_seconds(), 0)
-
-else:  # pragma: no cover
-
-    def timedelta_seconds(delta):  # noqa
-        """Convert :class:`datetime.timedelta` to seconds.
-
-        Doesn't account for negative values.
-
-        """
-        if delta.days < 0:
-            return 0
-        return delta.days * 86400 + delta.seconds + (delta.microseconds / 10e5)
-
-
 def delta_resolution(dt, delta):
     """Round a datetime to the resolution of a timedelta.
 
@@ -181,7 +157,7 @@ def delta_resolution(dt, delta):
     args = dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second
     for res, predicate in resolutions:
         if predicate(delta) >= 1.0:
-            return datetime(*args[:res])
+            return datetime(*args[:res], tzinfo=dt.tzinfo)
     return dt
 
 
@@ -211,8 +187,8 @@ def remaining(start, ends_in, now=None, relative=False):
 
 
 def rate(rate):
-    """Parses rate strings, such as `"100/m"`, `"2/h"` or `"0.5/s"`
-    and converts them to seconds."""
+    """Parse rate strings, such as `"100/m"`, `"2/h"` or `"0.5/s"`
+    and convert them to seconds."""
     if rate:
         if isinstance(rate, string_t):
             ops, _, modifier = rate.partition('/')
@@ -265,7 +241,7 @@ def maybe_iso8601(dt):
 
 
 def is_naive(dt):
-    """Returns :const:`True` if the datetime is naive
+    """Return :const:`True` if the datetime is naive
     (does not have timezone information)."""
     return dt.tzinfo is None or dt.tzinfo.utcoffset(dt) is None
 

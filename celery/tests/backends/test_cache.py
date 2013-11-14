@@ -6,16 +6,17 @@ import types
 from contextlib import contextmanager
 
 from kombu.utils.encoding import str_to_bytes
-from mock import Mock, patch
 
-from celery import subtask
+from celery import signature
 from celery import states
 from celery.backends.cache import CacheBackend, DummyClient
 from celery.exceptions import ImproperlyConfigured
 from celery.five import items, string, text_t
 from celery.utils import uuid
 
-from celery.tests.case import AppCase, mask_modules, reset_modules
+from celery.tests.case import (
+    AppCase, Mock, mask_modules, patch, reset_modules,
+)
 
 
 class SomeClass(object):
@@ -75,7 +76,7 @@ class test_CacheBackend(AppCase):
         task = Mock()
         task.name = 'foobarbaz'
         self.app.tasks['foobarbaz'] = task
-        task.request.chord = subtask(task)
+        task.request.chord = signature(task)
 
         gid, res = uuid(), [self.app.AsyncResult(uuid()) for _ in range(3)]
         task.request.group = gid

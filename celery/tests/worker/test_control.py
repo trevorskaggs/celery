@@ -7,7 +7,6 @@ from collections import defaultdict
 from datetime import datetime, timedelta
 
 from kombu import pidbox
-from mock import Mock, patch, call
 
 from celery.datastructures import AttributeDict
 from celery.five import Queue as FastQueue
@@ -17,12 +16,12 @@ from celery.worker import WorkController as _WC
 from celery.worker import consumer
 from celery.worker import control
 from celery.worker import state as worker_state
-from celery.worker.job import TaskRequest
+from celery.worker.job import Request
 from celery.worker.state import revoked
 from celery.worker.control import Panel
 from celery.worker.pidbox import Pidbox, gPidbox
 
-from celery.tests.case import AppCase
+from celery.tests.case import AppCase, Mock, call, patch
 
 hostname = socket.gethostname()
 
@@ -44,6 +43,8 @@ class Consumer(consumer.Consumer):
         self.event_dispatcher = Mock()
         self.controller = WorkController()
         self.task_consumer = Mock()
+        self.prefetch_multiplier = 1
+        self.initial_prefetch_count = 1
 
         from celery.concurrency.base import BasePool
         self.pool = BasePool(10)
@@ -125,6 +126,7 @@ class test_ControlPanel(AppCase):
 
     def create_state(self, **kwargs):
         kwargs.setdefault('app', self.app)
+        kwargs.setdefault('hostname', hostname)
         return AttributeDict(kwargs)
 
     def create_panel(self, **kwargs):
@@ -165,7 +167,7 @@ class test_ControlPanel(AppCase):
         panel.state.app.clock.value = 313
         worker_state.revoked.add('revoked1')
         try:
-            x = panel.handle('hello')
+            x = panel.handle('hello', {'from_node': 'george@vandelay.com'})
             self.assertIn('revoked1', x['revoked'])
             self.assertEqual(x['clock'], 314)  # incremented
         finally:
@@ -248,7 +250,12 @@ class test_ControlPanel(AppCase):
         self.panel.handle('report')
 
     def test_active(self):
-        r = TaskRequest(self.mytask.name, 'do re mi', (), {}, app=self.app)
+        r = Request({
+            'task': self.mytask.name,
+            'id': 'do re mi',
+            'args': (),
+            'kwargs': {},
+        }, app=self.app)
         worker_state.active_requests.add(r)
         try:
             self.assertTrue(self.panel.handle('dump_active'))
@@ -268,14 +275,24 @@ class test_ControlPanel(AppCase):
             def shrink(self, n=1):
                 self.size -= n
 
+            @property
+            def num_processes(self):
+                return self.size
+
         consumer = Consumer(self.app)
-        consumer.pool = MockPool()
+        consumer.prefetch_multiplier = 8
+        consumer.qos = Mock(name='qos')
+        consumer.pool = MockPool(1)
         panel = self.create_panel(consumer=consumer)
 
         panel.handle('pool_grow')
         self.assertEqual(consumer.pool.size, 2)
+        consumer.qos.increment_eventually.assert_called_with(8)
+        self.assertEqual(consumer.initial_prefetch_count, 16)
         panel.handle('pool_shrink')
         self.assertEqual(consumer.pool.size, 1)
+        consumer.qos.decrement_eventually.assert_called_with(8)
+        self.assertEqual(consumer.initial_prefetch_count, 8)
 
         panel.state.consumer = Mock()
         panel.state.consumer.controller = Mock()
@@ -330,21 +347,28 @@ class test_ControlPanel(AppCase):
         consumer = Consumer(self.app)
         panel = self.create_panel(consumer=consumer)
         self.assertFalse(panel.handle('dump_schedule'))
-        r = TaskRequest(self.mytask.name, 'CAFEBABE', (), {}, app=self.app)
-        consumer.timer.schedule.enter(
+        r = Request({
+            'task': self.mytask.name,
+            'id': 'CAFEBABE',
+            'args': (),
+            'kwargs': {},
+        }, app=self.app)
+        consumer.timer.schedule.enter_at(
             consumer.timer.Entry(lambda x: x, (r, )),
             datetime.now() + timedelta(seconds=10))
-        consumer.timer.schedule.enter(
+        consumer.timer.schedule.enter_at(
             consumer.timer.Entry(lambda x: x, (object(), )),
             datetime.now() + timedelta(seconds=10))
         self.assertTrue(panel.handle('dump_schedule'))
 
     def test_dump_reserved(self):
         consumer = Consumer(self.app)
-        worker_state.reserved_requests.add(
-            TaskRequest(self.mytask.name, uuid(), args=(2, 2), kwargs={},
-                        app=self.app),
-        )
+        worker_state.reserved_requests.add(Request({
+            'task': self.mytask.name,
+            'id': uuid(),
+            'args': (2, 2),
+            'kwargs': {},
+        }, app=self.app))
         try:
             panel = self.create_panel(consumer=consumer)
             response = panel.handle('dump_reserved', {'safe': True})

@@ -2,14 +2,11 @@ from __future__ import absolute_import
 
 import sys
 
-from time import time
-
-from mock import Mock, patch
-
 from celery.concurrency.base import BasePool
+from celery.five import monotonic
 from celery.worker import state
 from celery.worker import autoscale
-from celery.tests.case import AppCase, sleepdeprived
+from celery.tests.case import AppCase, Mock, patch, sleepdeprived
 
 
 class Object(object):
@@ -42,28 +39,30 @@ class MockPool(BasePool):
 
 class test_WorkerComponent(AppCase):
 
-    def test_on_poll_init(self):
-        parent = Mock()
+    def test_register_with_event_loop(self):
+        parent = Mock(name='parent')
         parent.autoscale = True
+        parent.consumer.on_task_message = set()
         w = autoscale.WorkerComponent(parent)
         self.assertIsNone(parent.autoscaler)
         self.assertTrue(w.enabled)
 
-        hub = Mock()
-        hub.on_task = []
-        scaler = Mock()
-        scaler.keepalive = 10
-        w.on_poll_init(scaler, hub)
-        self.assertIn(scaler.maybe_scale, hub.on_task)
-        hub.timer.apply_interval.assert_called_with(
-            10 * 1000.0, scaler.maybe_scale,
+        hub = Mock(name='hub')
+        w.create(parent)
+        w.register_with_event_loop(parent, hub)
+        self.assertIn(
+            parent.autoscaler.maybe_scale,
+            parent.consumer.on_task_message,
+        )
+        hub.call_repeatedly.assert_called_with(
+            parent.autoscaler.keepalive, parent.autoscaler.maybe_scale,
         )
 
         parent.hub = hub
         hub.on_init = []
         w.instantiate = Mock()
-        w.create_ev(parent)
-        self.assertTrue(hub.on_init)
+        w.register_with_event_loop(parent, Mock(name='loop'))
+        self.assertTrue(parent.consumer.on_task_message)
 
 
 class test_Autoscaler(AppCase):
@@ -83,7 +82,8 @@ class test_Autoscaler(AppCase):
             def join(self, timeout=None):
                 self.joined = True
 
-        x = Scaler(self.pool, 10, 3)
+        worker = Mock(name='worker')
+        x = Scaler(self.pool, 10, 3, worker=worker)
         x._is_stopped.set()
         x.stop()
         self.assertTrue(x.joined)
@@ -94,7 +94,8 @@ class test_Autoscaler(AppCase):
 
     @sleepdeprived(autoscale)
     def test_body(self):
-        x = autoscale.Autoscaler(self.pool, 10, 3)
+        worker = Mock(name='worker')
+        x = autoscale.Autoscaler(self.pool, 10, 3, worker=worker)
         x.body()
         self.assertEqual(x.pool.num_processes, 3)
         for i in range(20):
@@ -102,12 +103,14 @@ class test_Autoscaler(AppCase):
         x.body()
         x.body()
         self.assertEqual(x.pool.num_processes, 10)
+        self.assertTrue(worker.consumer._update_prefetch_count.called)
         state.reserved_requests.clear()
         x.body()
         self.assertEqual(x.pool.num_processes, 10)
-        x._last_action = time() - 10000
+        x._last_action = monotonic() - 10000
         x.body()
         self.assertEqual(x.pool.num_processes, 3)
+        self.assertTrue(worker.consumer._update_prefetch_count.called)
 
     def test_run(self):
 
@@ -118,30 +121,34 @@ class test_Autoscaler(AppCase):
                 self.scale_called = True
                 self._is_shutdown.set()
 
-        x = Scaler(self.pool, 10, 3)
+        worker = Mock(name='worker')
+        x = Scaler(self.pool, 10, 3, worker=worker)
         x.run()
         self.assertTrue(x._is_shutdown.isSet())
         self.assertTrue(x._is_stopped.isSet())
         self.assertTrue(x.scale_called)
 
     def test_shrink_raises_exception(self):
-        x = autoscale.Autoscaler(self.pool, 10, 3)
+        worker = Mock(name='worker')
+        x = autoscale.Autoscaler(self.pool, 10, 3, worker=worker)
         x.scale_up(3)
-        x._last_action = time() - 10000
+        x._last_action = monotonic() - 10000
         x.pool.shrink_raises_exception = True
         x.scale_down(1)
 
     @patch('celery.worker.autoscale.debug')
     def test_shrink_raises_ValueError(self, debug):
-        x = autoscale.Autoscaler(self.pool, 10, 3)
+        worker = Mock(name='worker')
+        x = autoscale.Autoscaler(self.pool, 10, 3, worker=worker)
         x.scale_up(3)
-        x._last_action = time() - 10000
+        x._last_action = monotonic() - 10000
         x.pool.shrink_raises_ValueError = True
         x.scale_down(1)
         self.assertTrue(debug.call_count)
 
     def test_update_and_force(self):
-        x = autoscale.Autoscaler(self.pool, 10, 3)
+        worker = Mock(name='worker')
+        x = autoscale.Autoscaler(self.pool, 10, 3, worker=worker)
         self.assertEqual(x.processes, 3)
         x.force_scale_up(5)
         self.assertEqual(x.processes, 8)
@@ -163,7 +170,8 @@ class test_Autoscaler(AppCase):
         x.update(max=None, min=None)
 
     def test_info(self):
-        x = autoscale.Autoscaler(self.pool, 10, 3)
+        worker = Mock(name='worker')
+        x = autoscale.Autoscaler(self.pool, 10, 3, worker=worker)
         info = x.info()
         self.assertEqual(info['max'], 10)
         self.assertEqual(info['min'], 3)
@@ -177,7 +185,8 @@ class test_Autoscaler(AppCase):
             def body(self):
                 self._is_shutdown.set()
                 raise OSError('foo')
-        x = _Autoscaler(self.pool, 10, 3)
+        worker = Mock(name='worker')
+        x = _Autoscaler(self.pool, 10, 3, worker=worker)
 
         stderr = Mock()
         p, sys.stderr = sys.stderr, stderr

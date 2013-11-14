@@ -21,6 +21,7 @@ from celery.utils import jsonify
 
 from . import state as worker_state
 from .state import revoked
+from .job import Request
 
 __all__ = ['Panel']
 DEFAULT_TASK_INFO_ITEMS = ('exchange', 'routing_key', 'rate_limit')
@@ -38,7 +39,7 @@ class Panel(UserDict):
 
 def _find_requests_by_id(ids, requests):
     found, total = 0, len(ids)
-    for request in worker_state.reserved_requests:
+    for request in requests:
         if request.id in ids:
             yield request
             found += 1
@@ -47,32 +48,49 @@ def _find_requests_by_id(ids, requests):
 
 
 @Panel.register
+def query_task(state, ids, **kwargs):
+    ids = maybe_list(ids)
+
+    def reqinfo(state, req):
+        return state, req.info()
+
+    reqs = dict((req.id, ('reserved', req.info()))
+                for req in _find_requests_by_id(
+                    ids, worker_state.reserved_requests))
+    reqs.update(dict(
+        (req.id, ('active', req.info()))
+        for req in _find_requests_by_id(
+            ids, worker_state.active_requests,
+        )
+    ))
+
+    return reqs
+
+
+@Panel.register
 def revoke(state, task_id, terminate=False, signal=None, **kwargs):
     """Revoke task by task id."""
     # supports list argument since 3.1
-    task_ids, task_id = maybe_list(task_id) or [], None
-    to_terminate = set()
+    task_ids, task_id = set(maybe_list(task_id) or []), None
+    size = len(task_ids)
     terminated = set()
-    for task_id in task_ids:
-        revoked.add(task_id)
-        if terminate:
-            to_terminate.add(task_id)
 
-    if to_terminate:
+    revoked.update(task_ids)
+    if terminate:
         signum = _signals.signum(signal or 'TERM')
-        _to_terminate = set()
         # reserved_requests changes size during iteration
         # so need to consume the items first, then terminate after.
         requests = set(_find_requests_by_id(
-            to_terminate,
+            task_ids,
             worker_state.reserved_requests,
         ))
         for request in requests:
-            logger.info('Terminating %s (%s)', task_id, signum)
-            request.terminate(state.consumer.pool, signal=signum)
-            terminated.add(request.id)
-            if len(terminated) >= len(_to_terminate):
-                break
+            if request.id not in terminated:
+                terminated.add(request.id)
+                logger.info('Terminating %s (%s)', request.id, signum)
+                request.terminate(state.consumer.pool, signal=signum)
+                if len(terminated) >= size:
+                    break
 
         if not terminated:
             return {'ok': 'terminate: tasks unknown'}
@@ -168,18 +186,18 @@ def time_limit(state, task_name=None, hard=None, soft=None, **kwargs):
 
 @Panel.register
 def dump_schedule(state, safe=False, **kwargs):
-    from celery.worker.job import Request
-    schedule = state.consumer.timer.schedule
-    if not schedule.queue:
-        return []
 
     def prepare_entries():
-        for entry in schedule.info():
-            item = entry['item']
-            if item.args and isinstance(item.args[0], Request):
-                yield {'eta': entry['eta'],
-                       'priority': entry['priority'],
-                       'request': item.args[0].info(safe=safe)}
+        for waiting in state.consumer.timer.schedule.queue:
+            try:
+                arg0 = waiting.entry.args[0]
+            except (IndexError, TypeError):
+                continue
+            else:
+                if isinstance(arg0, Request):
+                    yield {'eta': arg0.eta.isoformat() if arg0.eta else None,
+                           'priority': waiting.priority,
+                           'request': arg0.info(safe=safe)}
     return list(prepare_entries())
 
 
@@ -245,9 +263,13 @@ def dump_revoked(state, **kwargs):
 
 
 @Panel.register
-def hello(state, **kwargs):
-    return {'revoked': worker_state.revoked._data,
-            'clock': state.app.clock.forward()}
+def hello(state, from_node, revoked=None, **kwargs):
+    if from_node != state.hostname:
+        logger.info('sync with %s', from_node)
+        if revoked:
+            worker_state.revoked.update(revoked)
+        return {'revoked': worker_state.revoked._data,
+                'clock': state.app.clock.forward()}
 
 
 @Panel.register
@@ -278,7 +300,8 @@ def pool_grow(state, n=1, **kwargs):
         state.consumer.controller.autoscaler.force_scale_up(n)
     else:
         state.consumer.pool.grow(n)
-    return {'ok': 'spawned worker processes'}
+        state.consumer._update_prefetch_count(n)
+    return {'ok': 'pool will grow'}
 
 
 @Panel.register
@@ -287,7 +310,8 @@ def pool_shrink(state, n=1, **kwargs):
         state.consumer.controller.autoscaler.force_scale_down(n)
     else:
         state.consumer.pool.shrink(n)
-    return {'ok': 'terminated worker processes'}
+        state.consumer._update_prefetch_count(-n)
+    return {'ok': 'pool will shrink'}
 
 
 @Panel.register
@@ -330,7 +354,7 @@ def cancel_consumer(state, queue=None, **_):
 
 @Panel.register
 def active_queues(state):
-    """Returns the queues associated with each worker."""
+    """Return information about the queues a worker consumes from."""
     return [dict(queue.as_dict(recurse=True))
             for queue in state.consumer.task_consumer.queues]
 
@@ -340,8 +364,8 @@ def _wanted_config_key(key):
 
 
 @Panel.register
-def dump_conf(state, **kwargs):
-    return jsonify(dict(state.app.conf),
+def dump_conf(state, with_defaults=False, **kwargs):
+    return jsonify(state.app.conf.table(with_defaults=with_defaults),
                    keyfilter=_wanted_config_key,
                    unknown_type_filter=safe_repr)
 

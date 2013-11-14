@@ -21,8 +21,6 @@
     celery.app.log
     celery.app.utils
     celery.bootsteps
-    celery.task
-    celery.task.base
     celery.result
     celery.task.http
     celery.schedules
@@ -43,10 +41,10 @@
     celery.contrib.methods
     celery.events
     celery.events.state
+    celery.beat
     celery.apps.worker
     celery.apps.beat
     celery.worker
-    celery.worker.hub
     celery.worker.consumer
     celery.worker.job
     celery.worker.state

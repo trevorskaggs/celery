@@ -2,19 +2,19 @@ from __future__ import absolute_import
 
 from datetime import timedelta
 
-from mock import Mock, patch
-from nose import SkipTest
 from pickle import loads, dumps
 
 from kombu.utils import cached_property, uuid
 
-from celery import subtask
+from celery import signature
 from celery import states
 from celery.datastructures import AttributeDict
 from celery.exceptions import ImproperlyConfigured
 from celery.utils.timeutils import timedelta_seconds
 
-from celery.tests.case import AppCase, depends_on_current_app
+from celery.tests.case import (
+    AppCase, Mock, SkipTest, depends_on_current_app, patch,
+)
 
 
 class Redis(object):
@@ -157,7 +157,7 @@ class test_RedisBackend(AppCase):
         task = Mock()
         task.name = 'foobarbaz'
         self.app.tasks['foobarbaz'] = task
-        task.request.chord = subtask(task)
+        task.request.chord = signature(task)
         task.request.group = 'group_id'
 
         b.on_chord_part_return(task)

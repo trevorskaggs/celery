@@ -3,10 +3,9 @@ from __future__ import absolute_import
 import os
 
 from itertools import count
-from mock import Mock
 
 from celery.concurrency.base import apply_target, BasePool
-from celery.tests.case import AppCase
+from celery.tests.case import AppCase, Mock
 
 
 class test_BasePool(AppCase):
@@ -90,20 +89,16 @@ class test_BasePool(AppCase):
     def test_interface_did_start_ok(self):
         self.assertTrue(BasePool(10).did_start_ok())
 
-    def test_interface_on_poll_init(self):
-        self.assertIsNone(BasePool(10).on_poll_init(Mock(), Mock()))
-
-    def test_interface_on_poll_start(self):
-        self.assertIsNone(BasePool(10).on_poll_start(Mock()))
+    def test_interface_register_with_event_loop(self):
+        self.assertIsNone(
+            BasePool(10).register_with_event_loop(Mock()),
+        )
 
     def test_interface_on_soft_timeout(self):
         self.assertIsNone(BasePool(10).on_soft_timeout(Mock()))
 
     def test_interface_on_hard_timeout(self):
         self.assertIsNone(BasePool(10).on_hard_timeout(Mock()))
-
-    def test_interface_maybe_handle_result(self):
-        self.assertIsNone(BasePool(10).maybe_handle_result(1, 2))
 
     def test_interface_close(self):
         p = BasePool(10)

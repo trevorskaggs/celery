@@ -1,11 +1,9 @@
 from __future__ import absolute_import
 
-from mock import Mock, patch
-
 from celery import uuid
 from celery import signals
 from celery import states
-from celery.exceptions import RetryTaskError, Ignore
+from celery.exceptions import Ignore, Retry
 from celery.app.trace import (
     TraceInfo,
     eager_trace_task,
@@ -13,7 +11,7 @@ from celery.app.trace import (
     setup_worker_optimizations,
     reset_worker_optimizations,
 )
-from celery.tests.case import AppCase
+from celery.tests.case import AppCase, Mock, patch
 
 
 def trace(app, task, args=(), kwargs={}, propagate=False, **opts):
@@ -131,8 +129,8 @@ class test_trace(TraceCase):
         with self.assertRaises(SystemExit):
             self.trace(self.raises, (SystemExit(), ), {})
 
-    def test_trace_RetryTaskError(self):
-        exc = RetryTaskError('foo', 'bar')
+    def test_trace_Retry(self):
+        exc = Retry('foo', 'bar')
         _, info = self.trace(self.raises, (exc, ), {})
         self.assertEqual(info.state, states.RETRY)
         self.assertIs(info.retval, exc)

@@ -188,10 +188,7 @@ Is Celery for Django only?
 
 **Answer:** No.
 
-Celery does not depend on Django anymore. To use Celery with Django you have
-to use the `django-celery`_ package.
-
-.. _`django-celery`: http://pypi.python.org/pypi/django-celery
+You can use Celery with any framework, web or otherwise.
 
 .. _faq-is-celery-for-rabbitmq-only:
 
@@ -289,7 +286,7 @@ most systems), it usually contains a message describing the reason.
 Does it work on FreeBSD?
 ------------------------
 
-**Answer:** The multiprocessing pool requires a working POSIX semaphore
+**Answer:** The prefork pool requires a working POSIX semaphore
 implementation which isn't enabled in FreeBSD by default. You have to enable
 POSIX semaphores in the kernel and manually recompile multiprocessing.
 
@@ -529,9 +526,9 @@ If you don't use the results for a task, make sure you set the
 
 .. code-block python
 
-    @celery.task(ignore_result=True)
+    @app.task(ignore_result=True)
     def mytask():
-        ...
+        …
 
     class MyTask(Task):
         ignore_result = True
@@ -623,7 +620,7 @@ How can I get the task id of the current task?
 
 **Answer**: The current id and more is available in the task request::
 
-    @celery.task(bind=True)
+    @app.task(bind=True)
     def mytask(self):
         cache.set(self.request.id, "Running")
 
@@ -636,7 +633,7 @@ Can I specify a custom task_id?
 
 **Answer**: Yes.  Use the `task_id` argument to :meth:`Task.apply_async`::
 
-    >>> task.apply_async(args, kwargs, task_id="...")
+    >>> task.apply_async(args, kwargs, task_id='…')
 
 
 Can I use decorators with tasks?
@@ -669,11 +666,11 @@ Also, a common pattern is to add callbacks to tasks:
 
     logger = get_task_logger(__name__)
 
-    @celery.task
+    @app.task
     def add(x, y):
         return x + y
 
-    @celery.task(ignore_result=True)
+    @app.task(ignore_result=True)
     def log_result(result):
         logger.info("log_result got: %r", result)
 
@@ -733,19 +730,18 @@ Can I change the interval of a periodic task at runtime?
 --------------------------------------------------------
 
 **Answer**: Yes. You can use the Django database scheduler, or you can
-override `PeriodicTask.is_due` or turn `PeriodicTask.run_every` into a
-property:
+create a new schedule subclass and override
+:meth:`~celery.schedules.schedule.is_due`:
 
 .. code-block:: python
 
-    class MyPeriodic(PeriodicTask):
+    from celery.schedules import schedule
 
-        def run(self):
-            # ...
 
-        @property
-        def run_every(self):
-            return get_interval_from_database(...)
+    class my_schedule(schedule):
+
+        def is_due(self, last_run_at):
+            return …
 
 .. _faq-task-priorities:
 
@@ -783,7 +779,7 @@ this is rarely the case. Imagine the following task:
 
 .. code-block:: python
 
-    @celery.task
+    @app.task
     def process_upload(filename, tmpfile):
         # Increment a file count stored in a database
         increment_file_counter()
