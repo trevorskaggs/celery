@@ -7,8 +7,8 @@
 
 from __future__ import absolute_import
 
-SERIES = 'Cipater'
-VERSION = (3, 1, 3)
+SERIES = 'Gantz Graf'
+VERSION = (3, 2, 0, 'a1')
 __version__ = '.'.join(str(p) for p in VERSION[0:3]) + ''.join(VERSION[3:])
 __author__ = 'Ask Solem'
 __contact__ = 'ask@celeryproject.org'

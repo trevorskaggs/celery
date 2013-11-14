@@ -26,7 +26,7 @@ __all__ = ['set_default_app', 'get_current_app', 'get_current_task',
 default_app = None
 
 #: List of all app instances (weakrefs), must not be used directly.
-_apps = set()
+_apps = weakref.WeakSet()
 
 _task_join_will_block = False
 
@@ -104,18 +104,8 @@ current_task = Proxy(get_current_task)
 
 
 def _register_app(app):
-    _apps.add(weakref.ref(app))
+    _apps.add(app)
 
 
 def _get_active_apps():
-    dirty = []
-    try:
-        for appref in _apps:
-            app = appref()
-            if app is None:
-                dirty.append(appref)
-            else:
-                yield app
-    finally:
-        while dirty:
-            _apps.discard(dirty.pop())
+    return _apps

@@ -380,7 +380,7 @@ class crontab(schedule):
 
             int         (like 7)
             str         (like '3-5,*/15', '*', or 'monday')
-            set         (like set([0,15,30,45]))
+            set         (like {0, 15, 30, 45}
             list        (like [8-17])
 
         And convert it to an (expanded) set representing all time unit
@@ -400,7 +400,7 @@ class crontab(schedule):
 
         """
         if isinstance(cronspec, int):
-            result = set([cronspec])
+            result = {cronspec}
         elif isinstance(cronspec, string_t):
             result = crontab_parser(max_, min_).parse(cronspec)
         elif isinstance(cronspec, set):
