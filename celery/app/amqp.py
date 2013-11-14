@@ -305,6 +305,7 @@ class AMQP(object):
                             create_sent_event=False):
         args = args or ()
         kwargs = kwargs or {}
+        utc = self.utc
         if not isinstance(args, (list, tuple)):
             raise ValueError('task args must be a list or tuple')
         if not isinstance(kwargs, dict):
@@ -312,15 +313,22 @@ class AMQP(object):
         if countdown:  # Convert countdown to ETA.
             now = now or self.app.now()
             eta = now + timedelta(seconds=countdown)
+            if utc:
+                eta = eta.replace(tzinfo=self.app.timezone)
         if isinstance(expires, (int, float)):
             now = now or self.app.now()
             expires = now + timedelta(seconds=expires)
+            if utc:
+                expires = expires.replace(tzinfo=self.app.timezone)
         eta = eta and eta.isoformat()
         expires = expires and expires.isoformat()
 
         return task_message(
             {},
-            {},
+            {
+                'correlation_id': task_id,
+                'reply_to': reply_to,
+            },
             {
                 'task': name,
                 'id': task_id,
@@ -329,10 +337,9 @@ class AMQP(object):
                 'retries': retries or 0,
                 'eta': eta,
                 'expires': expires,
-                'utc': self.utc,
+                'utc': utc,
                 'callbacks': callbacks,
                 'errbacks': errbacks,
-                'reply_to': reply_to,
                 'timelimit': (time_limit, soft_time_limit),
                 'taskset': group_id,
                 'chord': chord,
@@ -353,7 +360,13 @@ class AMQP(object):
         default_policy = self.app.conf.CELERY_TASK_PUBLISH_RETRY_POLICY
         default_queue = self.default_queue
         queues = self.queues
-        send_sent_signal = signals.task_sent.send
+        send_before_publish = signals.before_task_publish.send
+        before_receivers = signals.before_task_publish.receivers
+        send_after_publish = signals.after_task_publish.send
+        after_receivers = signals.after_task_publish.receivers
+        send_task_sent = signals.task_sent.send  # XXX compat
+        sent_receivers = signals.task_sent.receivers
+
         default_evd = self._event_dispatcher
         default_exchange = self.default_exchange
 
@@ -365,7 +378,7 @@ class AMQP(object):
                          exchange=None, routing_key=None, queue=None,
                          event_dispatcher=None, retry=None, retry_policy=None,
                          serializer=None, delivery_mode=None, compression=None,
-                         declare=None, **kwargs):
+                         declare=None, headers=None, **kwargs):
             """Send task message."""
             retry = default_retry if retry is None else retry
             headers, properties, body, sent_event = message
@@ -381,12 +394,22 @@ class AMQP(object):
                     qname = queue.name
             exchange = exchange or queue.exchange.name
             routing_key = routing_key or queue.routing_key
-            declare = declare or ([queue] if queue else [])
+            if declare is None and queue and not isinstance(queue, Broadcast):
+                declare = [queue]
 
             # merge default and custom policy
             retry = default_retry if retry is None else retry
             _rp = (dict(default_policy, **retry_policy) if retry_policy
                    else default_policy)
+
+            if before_receivers:
+                send_before_publish(
+                    sender=name, body=body,
+                    exchange=exchange, routing_key=routing_key,
+                    declare=declare, headers=headers,
+                    properties=kwargs, retry_policy=retry_policy,
+                )
+
             ret = producer.publish(
                 body,
                 exchange=exchange or default_exchange,
@@ -395,9 +418,16 @@ class AMQP(object):
                 compression=compression or default_compressor,
                 retry=retry, retry_policy=_rp,
                 delivery_mode=delivery_mode, declare=declare,
+                headers=headers,
                 **properties
             )
-            send_sent_signal(sender=name, **body)
+            if after_receivers:
+                send_after_publish(sender=name, body=body,
+                                   exchange=exchange, routing_key=routing_key)
+            if sent_receivers:  # XXX deprecated
+                send_task_sent(sender=name, task_id=body['id'], task=name,
+                               args=body['args'], kwargs=body['kwargs'],
+                               eta=body['eta'], taskset=body['taskset'])
             if sent_event:
                 evd = event_dispatcher or default_evd
                 exname = exchange or self.exchange
