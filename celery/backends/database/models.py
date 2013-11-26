@@ -25,7 +25,7 @@ class Task(ResultModelBase):
     __tablename__ = 'celery_taskmeta'
     __table_args__ = {'sqlite_autoincrement': True}
 
-    id = sa.Column(sa.Integer, sa.Sequence('task_id_sequence'),
+    id = sa.Column(sa.Integer, sa.Sequence('celery_taskmeta_sq'),
                    primary_key=True,
                    autoincrement=True)
     task_id = sa.Column(sa.String(255), unique=True)
@@ -54,7 +54,7 @@ class TaskSet(ResultModelBase):
     __tablename__ = 'celery_tasksetmeta'
     __table_args__ = {'sqlite_autoincrement': True}
 
-    id = sa.Column(sa.Integer, sa.Sequence('taskset_id_sequence'),
+    id = sa.Column(sa.Integer, sa.Sequence('celery_tasksetmeta_sq'),
                    autoincrement=True, primary_key=True)
     taskset_id = sa.Column(sa.String(255), unique=True)
     result = sa.Column(PickleType, nullable=True)
